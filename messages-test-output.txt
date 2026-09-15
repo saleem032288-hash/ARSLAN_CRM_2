@@ -1,0 +1,128 @@
+﻿
+ RUN  v4.1.11 C:/ARSLAN_CRM/wacrm
+
+ Γ¥» src/i18n/messages.test.ts (10 tests | 5 failed) 131ms
+     ├ù ko.json covers every en.json key 13ms
+     ├ù pt.json covers every en.json key 4ms
+     ├ù es.json covers every en.json key 1ms
+     ├ù es.json has no orphaned keys 2ms
+     ├ù es.json keeps every {argument}, plural branch and <tag> of en.json 1ms
+node.exe : 
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" "C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ» Failed Tests 5 ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»
+
+ FAIL  src/i18n/messages.test.ts > message catalogue parity > ko.json covers every en.json key
+AssertionError: ko.json is missing these keys: expected [ ΓÇª(11) ] to deeply equal []
+
+- Expected
++ Received
+
+- []
++ [
++   "Broadcasts.detail.modeSuperSafe",
++   "Broadcasts.wizard.scheduleSend.confirmInstant",
++   "Broadcasts.wizard.scheduleSend.confirmSuperSafe",
++   "Broadcasts.wizard.scheduleSend.estTime",
++   "Broadcasts.wizard.scheduleSend.modeInstant",
++   "Broadcasts.wizard.scheduleSend.modeInstantDesc",
++   "Broadcasts.wizard.scheduleSend.modeRow",
++   "Broadcasts.wizard.scheduleSend.modeSuperSafe",
++   "Broadcasts.wizard.scheduleSend.modeSuperSafeDesc",
++   "Broadcasts.wizard.scheduleSend.sendingMode",
++   "Broadcasts.wizard.scheduleSend.superSafeEstimate",
++ ]
+
+ Γ¥» src/i18n/messages.test.ts:263:61
+    261|     const translated = loadKeys(locale);
+    262|     const missing = [...source].filter((k) => !translated.has(k)).sortΓÇª
+    263|     expect(missing, `${locale}.json is missing these keys`).toEqual([]ΓÇª
+       |                                                             ^
+    264|   });
+    265|
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[1/5]ΓÄ»
+
+ FAIL  src/i18n/messages.test.ts > message catalogue parity > pt.json covers every en.json key
+AssertionError: pt.json is missing these keys: expected [ ΓÇª(7) ] to deeply equal []
+
+- Expected
++ Received
+
+- []
++ [
++   "Broadcasts.detail.modeSuperSafe",
++   "Contacts.importModal.failedRowsHeading",
++   "Contacts.importModal.resultInvalidPhone",
++   "Contacts.importModal.resultInvalidPhone_plural",
++   "Contacts.importModal.toastInvalidPhone",
++   "Contacts.importModal.toastInvalidPhone_plural",
++   "Contacts.importModal.unknownReason",
++ ]
+
+ Γ¥» src/i18n/messages.test.ts:263:61
+    261|     const translated = loadKeys(locale);
+    262|     const missing = [...source].filter((k) => !translated.has(k)).sortΓÇª
+    263|     expect(missing, `${locale}.json is missing these keys`).toEqual([]ΓÇª
+       |                                                             ^
+    264|   });
+    265|
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[2/5]ΓÄ»
+
+ FAIL  src/i18n/messages.test.ts > message catalogue parity > es.json covers every en.json key
+SyntaxError: Expected double-quoted property name in JSON at position 39326 (line 850 column 7)
+ Γ¥» loadCatalogue src/i18n/messages.test.ts:19:15
+     17|
+     18| function loadCatalogue(locale: string): Catalogue {
+     19|   return JSON.parse(readFileSync(join(MESSAGES_DIR, `${locale}.json`),ΓÇª
+       |               ^
+     20| }
+     21|
+ Γ¥» loadLeaves src/i18n/messages.test.ts:33:8
+ Γ¥» loadKeys src/i18n/messages.test.ts:38:18
+ Γ¥» src/i18n/messages.test.ts:261:24
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[3/5]ΓÄ»
+
+ FAIL  src/i18n/messages.test.ts > message catalogue parity > es.json has no orphaned keys
+SyntaxError: Expected double-quoted property name in JSON at position 39326 (line 850 column 7)
+ Γ¥» loadCatalogue src/i18n/messages.test.ts:19:15
+     17|
+     18| function loadCatalogue(locale: string): Catalogue {
+     19|   return JSON.parse(readFileSync(join(MESSAGES_DIR, `${locale}.json`),ΓÇª
+       |               ^
+     20| }
+     21|
+ Γ¥» loadLeaves src/i18n/messages.test.ts:33:8
+ Γ¥» loadKeys src/i18n/messages.test.ts:38:18
+ Γ¥» src/i18n/messages.test.ts:267:24
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[4/5]ΓÄ»
+
+ FAIL  src/i18n/messages.test.ts > message placeholder parity > es.json keeps every {argument}, plural branch and 
+<tag> of en.json
+SyntaxError: Expected double-quoted property name in JSON at position 39326 (line 850 column 7)
+ Γ¥» loadCatalogue src/i18n/messages.test.ts:19:15
+     17|
+     18| function loadCatalogue(locale: string): Catalogue {
+     19|   return JSON.parse(readFileSync(join(MESSAGES_DIR, `${locale}.json`),ΓÇª
+       |               ^
+     20| }
+     21|
+ Γ¥» loadLeaves src/i18n/messages.test.ts:33:8
+ Γ¥» src/i18n/messages.test.ts:293:26
+
+ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»ΓÄ»[5/5]ΓÄ»
+
+
+ Test Files  1 failed (1)
+      Tests  5 failed | 5 passed (10)
+   Start at  16:23:13
+   Duration  576ms (transform 50ms, setup 0ms, import 97ms, tests 131ms, environment 0ms)
+
+

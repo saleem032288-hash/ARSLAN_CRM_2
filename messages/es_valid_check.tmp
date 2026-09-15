@@ -1,0 +1,2 @@
+const fs = require('fs');
+const probe = JSON.parse(fs.readFileSync('C:\\Users\\HPZBOO~1\\AppData\\Local\\Temp\\opencode\\probe_all.js', 'utf8'));
