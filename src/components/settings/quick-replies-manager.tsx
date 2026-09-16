@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Loader2, MessageSquare, Pencil, Plus, Trash2, Zap } from "lucide-react";
+import { Loader2, MessageSquare, Pencil, Plus, Trash2, Video, Zap } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -23,6 +23,7 @@ import {
   interactivePayloadPreviewText,
   type InteractiveMessagePayload,
 } from "@/lib/whatsapp/interactive";
+import { MediaUploadField } from "@/components/shared/media-upload-field";
 import type { QuickReply, QuickReplyKind } from "@/types";
 
 interface DraftState {
@@ -31,6 +32,10 @@ interface DraftState {
   kind: QuickReplyKind;
   content_text: string;
   interactive_payload: InteractiveMessagePayload;
+  /** One of image | video | document — set when `kind === 'media'`. */
+  media_type: string;
+  /** Public storage URL — set when `kind === 'media'`. */
+  media_url: string;
 }
 
 function emptyDraft(): DraftState {
@@ -39,8 +44,16 @@ function emptyDraft(): DraftState {
     kind: "text",
     content_text: "",
     interactive_payload: blankButtonsPayload(),
+    media_type: "video",
+    media_url: "",
   };
 }
+
+const MEDIA_KIND_LABELS: Array<{ value: string; label: string }> = [
+  { value: "image", label: "Image" },
+  { value: "video", label: "Video" },
+  { value: "document", label: "Document" },
+];
 
 export function QuickRepliesManager() {
   const [items, setItems] = useState<QuickReply[]>([]);
@@ -72,6 +85,8 @@ export function QuickRepliesManager() {
       content_text: qr.content_text ?? "",
       interactive_payload:
         qr.interactive_payload ?? blankButtonsPayload(),
+      media_type: qr.media_type ?? "video",
+      media_url: qr.media_url ?? "",
     });
 
   const save = useCallback(async () => {
@@ -83,7 +98,15 @@ export function QuickRepliesManager() {
     const payload =
       draft.kind === "interactive"
         ? { title: draft.title, kind: "interactive", interactive_payload: draft.interactive_payload }
-        : { title: draft.title, kind: "text", content_text: draft.content_text };
+        : draft.kind === "media"
+          ? {
+              title: draft.title,
+              kind: "media",
+              media_type: draft.media_type,
+              media_url: draft.media_url,
+              content_text: draft.content_text,
+            }
+          : { title: draft.title, kind: "text", content_text: draft.content_text };
 
     setSaving(true);
     try {
@@ -153,6 +176,8 @@ export function QuickRepliesManager() {
             >
               {qr.kind === "interactive" ? (
                 <Zap className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+              ) : qr.kind === "media" ? (
+                <Video className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
               ) : (
                 <MessageSquare className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
               )}
@@ -161,7 +186,9 @@ export function QuickRepliesManager() {
                 <p className="truncate text-xs text-muted-foreground">
                   {qr.kind === "interactive" && qr.interactive_payload
                     ? interactivePayloadPreviewText(qr.interactive_payload)
-                    : qr.content_text}
+                    : qr.kind === "media"
+                      ? (qr.content_text || `[${qr.media_type ?? "media"}]`)
+                      : qr.content_text}
                 </p>
               </div>
               <div className="flex shrink-0 gap-1">
@@ -209,6 +236,11 @@ export function QuickRepliesManager() {
                   label="Interactive"
                   onClick={() => setDraft({ ...draft, kind: "interactive" })}
                 />
+                <KindTab
+                  active={draft.kind === "media"}
+                  label="Media"
+                  onClick={() => setDraft({ ...draft, kind: "media" })}
+                />
               </div>
               {draft.kind === "text" ? (
                 <Textarea
@@ -217,6 +249,50 @@ export function QuickRepliesManager() {
                   placeholder="The message text to insert"
                   className="min-h-28 bg-muted text-foreground"
                 />
+              ) : draft.kind === "media" ? (
+                <div className="flex flex-col gap-3">
+                  <div>
+                    <label className="mb-1 block text-xs text-muted-foreground">Media type</label>
+                    <select
+                      value={draft.media_type}
+                      onChange={(e) => setDraft({ ...draft, media_type: e.target.value })}
+                      className="w-full rounded-md border border-border bg-muted px-2 py-1.5 text-sm text-foreground"
+                    >
+                      {MEDIA_KIND_LABELS.map((m) => (
+                        <option key={m.value} value={m.value}>
+                          {m.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <MediaUploadField
+                    accept={
+                      draft.media_type === "image"
+                        ? "image/png,image/jpeg,image/webp"
+                        : draft.media_type === "video"
+                          ? "video/mp4,video/3gpp"
+                          : "application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain"
+                    }
+                    maxBytes={draft.media_type === "image" ? 5 * 1024 * 1024 : undefined}
+                    file={draft.media_url ? { url: draft.media_url } : null}
+                    onDone={(url) => setDraft({ ...draft, media_url: url })}
+                    onClear={() => setDraft({ ...draft, media_url: "" })}
+                    label="Attach file"
+                    hint="The file is attached straight from storage when an agent picks this."
+                  />
+                  <div>
+                    <label className="mb-1 block text-xs text-muted-foreground">
+                      Caption (optional)
+                    </label>
+                    <Textarea
+                      value={draft.content_text}
+                      onChange={(e) => setDraft({ ...draft, content_text: e.target.value })}
+                      placeholder="Shown under the file — leave empty for media only"
+                      maxLength={1024}
+                      className="min-h-20 bg-muted text-foreground"
+                    />
+                  </div>
+                </div>
               ) : (
                 <InteractiveBuilder
                   value={draft.interactive_payload}

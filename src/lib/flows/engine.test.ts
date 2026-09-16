@@ -19,6 +19,8 @@ const h = vi.hoisted(() => ({
     events: [] as Record<string, unknown>[],
     /** Every UPDATE, by table. */
     updates: [] as { table: string; row: Record<string, unknown> }[],
+    /** Set by the flow_runs INSERT; what its .maybeSingle() returns. */
+    insertedRun: null as Record<string, unknown> | null,
   },
   sendButtons: vi.fn<
     (
@@ -55,9 +57,23 @@ vi.mock("./admin-client", () => {
       },
       insert: (row: Record<string, unknown>) => {
         if (table === "flow_run_events") h.state.events.push(row);
+        if (table === "flow_runs") {
+          h.state.insertedRun = {
+            id: "run-1",
+            vars: {},
+            reprompt_count: 0,
+            ...row,
+          };
+        }
         return b;
       },
-      maybeSingle: async () => ({ data: rows(table)[0] ?? null, error: null }),
+      maybeSingle: async () => ({
+        data:
+          table === "flow_runs"
+            ? h.state.insertedRun
+            : (rows(table)[0] ?? null),
+        error: null,
+      }),
       single: async () => ({ data: rows(table)[0] ?? null, error: null }),
       then: (
         resolve: (r: {
@@ -388,6 +404,33 @@ describe("evaluateConditionPredicate", () => {
       }),
     ).toBe(false);
   });
+
+  it("exact_match: case-sensitive string comparison (alias of equals)", () => {
+    expect(
+      evaluateConditionPredicate({
+        operator: "exact_match",
+        subjectValue: "pro",
+        configValue: "pro",
+      }),
+    ).toBe(true);
+    expect(
+      evaluateConditionPredicate({
+        operator: "exact_match",
+        subjectValue: "Pro",
+        configValue: "pro",
+      }),
+    ).toBe(false);
+  });
+
+  it("exact_match: undefined subject never matches", () => {
+    expect(
+      evaluateConditionPredicate({
+        operator: "exact_match",
+        subjectValue: undefined,
+        configValue: "",
+      }),
+    ).toBe(false);
+  });
 });
 
 // ============================================================
@@ -623,5 +666,293 @@ describe("send_buttons / send_list interpolate {{vars.*}} (#553)", () => {
         }),
       }),
     );
+  });
+});
+
+// ============================================================
+// IF → ELSE IF → OTHER (false) chain.
+//
+// The condition node's primary predicate is evaluated first; if it's
+// false, each configured ELSE IF is evaluated top to bottom and the
+// first true match wins; if none match, the flow takes the false
+// (OTHER) branch. These drive the real `dispatchInboundToFlows`
+// against the fake Supabase so we assert the actual branch the engine
+// advanced to — not just the predicate helper.
+// ============================================================
+
+const CHAIN_FLOW = {
+  id: "flow-1",
+  account_id: "acct-1",
+  user_id: "u-1",
+  status: "active",
+  trigger_type: "keyword",
+  trigger_config: { keywords: ["order status"] },
+  entry_node_id: "check",
+  created_at: "2026-01-01T00:00:00Z",
+};
+
+const CONDITION_NODES = {
+  // The fake Supabase always returns 0 rows for contact_tags, so
+  // `tag present` is never true and `tag absent` is always true.
+  // That lets the chain exercise every branch without DB setup.
+  thenElseIf: [
+    {
+      id: "n1",
+      flow_id: "flow-1",
+      node_key: "check",
+      node_type: "condition",
+      config: {
+        subject: "tag",
+        subject_key: "tagA",
+        operator: "present",
+        true_next: "true_route",
+        else_ifs: [
+          {
+            subject: "tag",
+            subject_key: "tagA",
+            operator: "absent",
+            value: "",
+            next_node_key: "first_else",
+          },
+        ],
+        false_next: "false_route",
+      },
+    },
+    {
+      id: "n2",
+      flow_id: "flow-1",
+      node_key: "first_else",
+      node_type: "send_message",
+      config: { text: "Matched an else-if", next_node_key: "done" },
+    },
+    {
+      id: "n3",
+      flow_id: "flow-1",
+      node_key: "true_route",
+      node_type: "send_message",
+      config: { text: "Primary was true", next_node_key: "done" },
+    },
+    {
+      id: "n4",
+      flow_id: "flow-1",
+      node_key: "false_route",
+      node_type: "send_message",
+      config: { text: "Nothing matched", next_node_key: "done" },
+    },
+    {
+      id: "n9",
+      flow_id: "flow-1",
+      node_key: "done",
+      node_type: "end",
+      config: {},
+    },
+  ],
+  fallsThroughToFalse: [
+    {
+      id: "n1",
+      flow_id: "flow-1",
+      node_key: "check",
+      node_type: "condition",
+      config: {
+        subject: "tag",
+        subject_key: "tagA",
+        operator: "present",
+        true_next: "true_route",
+        else_ifs: [
+          {
+            subject: "tag",
+            subject_key: "tagB",
+            operator: "present",
+            value: "",
+            next_node_key: "first_else",
+          },
+        ],
+        false_next: "false_route",
+      },
+    },
+    {
+      id: "n2",
+      flow_id: "flow-1",
+      node_key: "first_else",
+      node_type: "send_message",
+      config: { text: "ELSE IF matched", next_node_key: "done" },
+    },
+    {
+      id: "n3",
+      flow_id: "flow-1",
+      node_key: "true_route",
+      node_type: "send_message",
+      config: { text: "Primary was true", next_node_key: "done" },
+    },
+    {
+      id: "n4",
+      flow_id: "flow-1",
+      node_key: "false_route",
+      node_type: "send_message",
+      config: { text: "Nothing matched", next_node_key: "done" },
+    },
+    {
+      id: "n9",
+      flow_id: "flow-1",
+      node_key: "done",
+      node_type: "end",
+      config: {},
+    },
+  ],
+  primaryWins: [
+    {
+      id: "n1",
+      flow_id: "flow-1",
+      node_key: "check",
+      node_type: "condition",
+      config: {
+        subject: "tag",
+        subject_key: "tagA",
+        operator: "absent",
+        true_next: "true_route",
+        else_ifs: [
+          {
+            subject: "tag",
+            subject_key: "tagA",
+            operator: "present",
+            value: "",
+            next_node_key: "first_else",
+          },
+        ],
+        false_next: "false_route",
+      },
+    },
+    {
+      id: "n2",
+      flow_id: "flow-1",
+      node_key: "first_else",
+      node_type: "send_message",
+      config: { text: "ELSE IF matched", next_node_key: "done" },
+    },
+    {
+      id: "n3",
+      flow_id: "flow-1",
+      node_key: "true_route",
+      node_type: "send_message",
+      config: { text: "Primary was true", next_node_key: "done" },
+    },
+    {
+      id: "n4",
+      flow_id: "flow-1",
+      node_key: "false_route",
+      node_type: "send_message",
+      config: { text: "Nothing matched", next_node_key: "done" },
+    },
+    {
+      id: "n9",
+      flow_id: "flow-1",
+      node_key: "done",
+      node_type: "end",
+      config: {},
+    },
+  ],
+};
+
+function chainEvents() {
+  return h.state.events as Array<{
+    event_type: string;
+    node_key: string;
+    payload?: Record<string, unknown>;
+  }>;
+}
+
+describe("condition IF / ELSE IF / OTHER chain (advance loop)", () => {
+  beforeEach(() => {
+    h.state.activeRuns = [];
+    h.state.flows = [CHAIN_FLOW];
+    h.state.events = [];
+    h.state.updates = [];
+  });
+
+  it("primary false → first ELSE IF true wins over OTHER", async () => {
+    h.state.nodes = CONDITION_NODES.thenElseIf;
+
+    const result = await dispatch(text("order status"));
+
+    expect(result).toMatchObject({ consumed: true, outcome: "completed" });
+    const entry = chainEvents().find(
+      (e) =>
+        e.event_type === "node_entered" &&
+        e.node_key === "check" &&
+        Object.hasOwn(e.payload ?? {}, "condition_result"),
+    );
+    expect(entry).toMatchObject({
+      payload: {
+        condition_result: "else_if_1",
+        advancing_to: "first_else",
+      },
+    });
+    expect(chainEvents()).toContainEqual(
+      expect.objectContaining({
+        event_type: "message_sent",
+        node_key: "first_else",
+      }),
+    );
+    expect(
+      chainEvents().some((e) => e.event_type === "message_sent" && e.node_key === "false_route"),
+    ).toBe(false);
+  });
+
+  it("no ELSE IF matches → falls through to OTHER (false)", async () => {
+    h.state.nodes = CONDITION_NODES.fallsThroughToFalse;
+
+    const result = await dispatch(text("order status"));
+
+    expect(result).toMatchObject({ consumed: true, outcome: "completed" });
+    const entry = chainEvents().find(
+      (e) =>
+        e.event_type === "node_entered" &&
+        e.node_key === "check" &&
+        Object.hasOwn(e.payload ?? {}, "condition_result"),
+    );
+    expect(entry).toMatchObject({
+      payload: {
+        condition_result: "false",
+        advancing_to: "false_route",
+      },
+    });
+    expect(chainEvents()).toContainEqual(
+      expect.objectContaining({
+        event_type: "message_sent",
+        node_key: "false_route",
+      }),
+    );
+    expect(
+      chainEvents().some((e) => e.event_type === "message_sent" && e.node_key === "first_else"),
+    ).toBe(false);
+  });
+
+  it("primary true short-circuits the ELSE IF list", async () => {
+    h.state.nodes = CONDITION_NODES.primaryWins;
+
+    const result = await dispatch(text("order status"));
+
+    expect(result).toMatchObject({ consumed: true, outcome: "completed" });
+    const entry = chainEvents().find(
+      (e) =>
+        e.event_type === "node_entered" &&
+        e.node_key === "check" &&
+        Object.hasOwn(e.payload ?? {}, "condition_result"),
+    );
+    expect(entry).toMatchObject({
+      payload: {
+        condition_result: "true",
+        advancing_to: "true_route",
+      },
+    });
+    expect(chainEvents()).toContainEqual(
+      expect.objectContaining({
+        event_type: "message_sent",
+        node_key: "true_route",
+      }),
+    );
+    expect(
+      chainEvents().some((e) => e.event_type === "message_sent" && e.node_key === "false_route"),
+    ).toBe(false);
   });
 });

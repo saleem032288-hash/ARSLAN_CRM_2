@@ -45,18 +45,19 @@ describe("validateStepsForActivation", () => {
   it("checks wait amount and unit boundaries", () => {
     const issues = validateStepsForActivation([
       { step_type: "wait", step_config: { amount: 0, unit: "minutes" } },
-      { step_type: "wait", step_config: { amount: 5, unit: "seconds" } },
+      { step_type: "wait", step_config: { amount: 10, unit: "seconds" } },
       { step_type: "wait", step_config: { amount: -1, unit: "hours" } },
       {
         step_type: "wait",
         step_config: { amount: Number.POSITIVE_INFINITY, unit: "days" },
       },
+      { step_type: "wait", step_config: { amount: 5, unit: "weeks" } },
     ]);
     expect(issues.map((i) => i.path)).toEqual([
       "steps[0].amount",
-      "steps[1].unit",
       "steps[2].amount",
       "steps[3].amount",
+      "steps[4].unit",
     ]);
   });
 
@@ -296,5 +297,48 @@ describe("validateTriggerForActivation", () => {
 
   it("does not flag unknown trigger types (handled elsewhere)", () => {
     expect(validateTriggerForActivation("some_future_trigger", {})).toEqual([]);
+  });
+});
+
+describe("validateStepsForActivation — send_message media", () => {
+  it("accepts an image attachment", () => {
+    expect(
+      validateStepsForActivation([
+        {
+          step_type: "send_message",
+          step_config: {
+            text: "Menu photo",
+            media: { type: "image", url: "https://cdn.example/menu.png" },
+          },
+        },
+      ]),
+    ).toEqual([]);
+  });
+
+  it("accepts a video-only message", () => {
+    expect(
+      validateStepsForActivation([
+        {
+          step_type: "send_message",
+          step_config: {
+            text: "",
+            media: { type: "video", url: "https://cdn.example/intro.mp4" },
+          },
+        },
+      ]),
+    ).toEqual([]);
+  });
+
+  it("rejects an unsupported media kind", () => {
+    const issues = validateStepsForActivation([
+      {
+        step_type: "send_message",
+        step_config: {
+          text: "doc",
+          media: { type: "document", url: "https://cdn.example/f.pdf" },
+        },
+      },
+    ]);
+    expect(issues.map((i) => i.path)).toContain("steps[0].media.type");
   });
 });

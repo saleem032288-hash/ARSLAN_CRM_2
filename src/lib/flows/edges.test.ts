@@ -144,6 +144,87 @@ describe("deriveCanvasEdges — condition (true/false branches)", () => {
     expect(edges).toHaveLength(1);
     expect(edges[0].sourceHandle).toBe("true");
   });
+
+  it("emits else_if branches between true and false, labeled with the predicate", () => {
+    const edges = deriveCanvasEdges(
+      nodes(
+        {
+          node_key: "c",
+          node_type: "condition",
+          config: {
+            subject: "var",
+            subject_key: "x",
+            operator: "equals",
+            value: "a",
+            true_next: "t",
+            else_ifs: [
+              {
+                subject: "var",
+                subject_key: "x",
+                operator: "equals",
+                value: "b",
+                next_node_key: "e1",
+              },
+              {
+                subject: "var",
+                subject_key: "y",
+                operator: "present",
+                value: "",
+                next_node_key: "e2",
+              },
+            ],
+            false_next: "f",
+          },
+        },
+        { node_key: "t", node_type: "end", config: {} },
+        { node_key: "e1", node_type: "end", config: {} },
+        { node_key: "e2", node_type: "end", config: {} },
+        { node_key: "f", node_type: "end", config: {} },
+      ),
+    );
+    expect(edges.map((e) => e.sourceHandle)).toEqual([
+      "true",
+      "else_if_1",
+      "else_if_2",
+      "false",
+    ]);
+    expect(edges[1]).toMatchObject({
+      source: "c",
+      target: "e1",
+      sourceHandle: "else_if_1",
+      label: 'else_if_1 ("x" = "b")',
+    });
+    expect(edges[2]).toMatchObject({
+      source: "c",
+      target: "e2",
+      sourceHandle: "else_if_2",
+      label: "else_if_2 (\"y\" is present)",
+    });
+  });
+
+  it("skips else_if entries whose target doesn't exist", () => {
+    const edges = deriveCanvasEdges(
+      nodes(
+        {
+          node_key: "c",
+          node_type: "condition",
+          config: {
+            subject: "var",
+            subject_key: "x",
+            operator: "present",
+            true_next: "t",
+            else_ifs: [
+              { subject_key: "x", operator: "equals", value: "a", next_node_key: "ghost" },
+            ],
+            false_next: "f",
+          },
+        },
+        { node_key: "t", node_type: "end", config: {} },
+        { node_key: "f", node_type: "end", config: {} },
+      ),
+    );
+    expect(edges.map((e) => e.sourceHandle)).toEqual(["true", "false"]);
+  });
 });
 
 describe("deriveCanvasEdges — send_buttons (per-button)", () => {
@@ -322,6 +403,23 @@ describe("outgoingSlots", () => {
     expect(slots.map((s) => s.label)).toEqual(["true", "false"]);
   });
 
+  it("interleaves else_if slots between true and false", () => {
+    const slots = outgoingSlots({
+      node_key: "c",
+      node_type: "condition",
+      config: {
+        else_ifs: [{}, {}, {}],
+      },
+    });
+    expect(slots.map((s) => s.id)).toEqual([
+      "true",
+      "else_if_1",
+      "else_if_2",
+      "else_if_3",
+      "false",
+    ]);
+  });
+
   it("returns one slot per button, labelled with the title", () => {
     const slots = outgoingSlots({
       node_key: "m",
@@ -400,7 +498,7 @@ describe("applyEdgeConnection", () => {
     expect(applyEdgeConnection(node, "button:x", "b")).toBeNull();
   });
 
-  it("patches the right branch on a condition", () => {
+it("patches the right branch on a condition", () => {
     const node: BuilderNode = {
       node_key: "c",
       node_type: "condition",
@@ -417,6 +515,52 @@ describe("applyEdgeConnection", () => {
     expect(applyEdgeConnection(node, "false", "f")).toEqual({
       false_next: "f",
     });
+  });
+
+  it("patches the matching else_if entry for an else_if_N handle", () => {
+    const node: BuilderNode = {
+      node_key: "c",
+      node_type: "condition",
+      config: {
+        subject: "var",
+        subject_key: "x",
+        operator: "equals",
+        value: "y",
+        true_next: "t",
+        else_ifs: [
+          { subject_key: "a", operator: "equals", value: "1", next_node_key: "" },
+          { subject_key: "b", operator: "present", value: "", next_node_key: "" },
+        ],
+        false_next: "f",
+      },
+    };
+    const patch = applyEdgeConnection(node, "else_if_2", "tgt") as {
+      else_ifs: Array<{ next_node_key: string }>;
+    };
+    expect(patch.else_ifs[0].next_node_key).toBe("");
+    expect(patch.else_ifs[1].next_node_key).toBe("tgt");
+  });
+
+  it("returns null for an out-of-range else_if_N handle", () => {
+    const node: BuilderNode = {
+      node_key: "c",
+      node_type: "condition",
+      config: {
+        true_next: "",
+        else_ifs: [{ next_node_key: "" }],
+        false_next: "",
+      },
+    };
+    expect(applyEdgeConnection(node, "else_if_2", "x")).toBeNull();
+  });
+
+it("returns null for an else_if_N handle when else_ifs is absent", () => {
+    const node: BuilderNode = {
+      node_key: "c",
+      node_type: "condition",
+      config: { true_next: "", false_next: "" },
+    };
+    expect(applyEdgeConnection(node, "else_if_1", "x")).toBeNull();
   });
 
   it("patches only the matching button row on send_buttons", () => {
@@ -548,7 +692,7 @@ describe("unlinkNodeReferences", () => {
     expect(buttons[1].next_node_key).toBe("safe");
   });
 
-  it("clears only the list rows that point at the deleted node", () => {
+it("clears only the list rows that point at the deleted node", () => {
     const before: BuilderNode[] = [
       {
         node_key: "l",
@@ -571,6 +715,33 @@ describe("unlinkNodeReferences", () => {
     }).sections[0].rows;
     expect(rows[0].next_node_key).toBe("");
     expect(rows[1].next_node_key).toBe("safe");
+  });
+
+  it("clears matching else_if next_node_keys on a condition node", () => {
+    const before: BuilderNode[] = [
+      {
+        node_key: "c",
+        node_type: "condition",
+        config: {
+          true_next: "t",
+          else_ifs: [
+            { subject_key: "a", operator: "equals", value: "", next_node_key: "victim" },
+            { subject_key: "b", operator: "present", value: "", next_node_key: "safe" },
+          ],
+          false_next: "f",
+        },
+      },
+    ];
+    const after = unlinkNodeReferences(before, "victim");
+    const cfg = after[0].config as {
+      true_next: string;
+      false_next: string;
+      else_ifs: Array<{ next_node_key: string }>;
+    };
+    expect(cfg.true_next).toBe("t");
+    expect(cfg.false_next).toBe("f");
+expect(cfg.else_ifs[0].next_node_key).toBe("");
+    expect(cfg.else_ifs[1].next_node_key).toBe("safe");
   });
 
   it("returns the input nodes by identity when none reference the deleted key (no-op path)", () => {

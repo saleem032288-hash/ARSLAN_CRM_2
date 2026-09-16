@@ -28,8 +28,20 @@ export interface StartNodeConfig {
 }
 
 export interface SendMessageNodeConfig {
-  /** Plain text sent to the customer; can interpolate {{vars.X}}. */
+  /** Plain text sent to the customer; can interpolate {{vars.X}}.
+   *  When `media` is set this becomes the caption (can be empty). */
   text: string;
+  /**
+   * Optional image or video attachment. When set, the node sends a
+   * WhatsApp image/video message and `text` is used as its caption.
+   * Uploaded by the builder to the `flow-media` bucket; `url` is the
+   * public URL Meta fetches at send time.
+   */
+  media?: {
+    type: "image" | "video";
+    url: string;
+    filename?: string;
+  };
   /** Auto-advance target after the message lands at Meta. */
   next_node_key: string;
 }
@@ -41,11 +53,24 @@ export interface SendButtonsNodeConfig {
   footer_text?: string;
   /** 1-3 buttons; Meta cap enforced in meta-api validation. */
   buttons: Array<{
-    /** Stable id sent back by Meta when this button is tapped. */
+    /** Stable id sent back by Meta when this button is tapped.
+     *  Auto-generated for `url` buttons too — URL taps open a link
+     *  instead of replying, so no webhook ever returns it. */
     reply_id: string;
     /** Visible label (≤ 20 chars per Meta). */
     title: string;
-    /** node_key the runner advances to when this button is tapped. */
+    /**
+     * `reply` (default) — tapping routes the run via `next_node_key`.
+     * `url` — opens an http(s) link in the customer's browser. Meta
+     * models URL buttons as a separate CTA-URL message: exactly ONE URL
+     * button per message, no mixing with reply buttons (validated in
+     * `src/lib/flows/validate.ts`). URL buttons never advance the run.
+     */
+    type?: "reply" | "url";
+    /** Absolute http(s) URL — required when `type === 'url'`. */
+    url?: string;
+    /** node_key the runner advances to when this button is tapped.
+     *  Not required for `url` buttons. */
     next_node_key: string;
   }>;
 }
@@ -138,6 +163,7 @@ export interface CollectInputNodeConfig {
 
 export type ConditionOperator =
   | "equals"
+  | "exact_match"
   | "contains"
   | "present"
   | "absent";
@@ -145,9 +171,31 @@ export type ConditionOperator =
 export type ConditionSubject = "var" | "tag" | "contact_field";
 
 /**
+ * One ordered ELSE IF predicate in a condition chain. Each branch
+ * carries its own target node. Evaluated after the primary condition;
+ * the first match wins, otherwise the run follows the condition's
+ * OTHER (`false_next`) target.
+ */
+export interface ElseIfCondition {
+  subject: ConditionSubject;
+  subject_key: string;
+  operator: ConditionOperator;
+  /** Compared against `subject` for `equals`/`exact_match`/`contains`. */
+  value?: string;
+  /** Node to advance to when this ELSE IF predicate matches. */
+  next_node_key: string;
+}
+
+/**
  * Routes the run based on a predicate over the contact's tags,
  * profile fields, or stored vars. Always auto-advances — no Meta
  * call, no customer-side input.
+ *
+ * Branch model: primary IF → optional ordered ELSE IF chain → OTHER.
+ *   - primary `true_next`  — IF matched.
+ *   - each `else_ifs[i].next_node_key` — matching ELSE IF branch.
+ *   - `false_next` — OTHER / nothing matched (kept as the legacy
+ *     "else" target so old configs behave identically).
  */
 export interface ConditionNodeConfig {
   subject: ConditionSubject;
@@ -158,11 +206,13 @@ export interface ConditionNodeConfig {
    */
   subject_key: string;
   operator: ConditionOperator;
-  /** Compared against `subject` for `equals`/`contains`. Ignored for `present`/`absent`. */
+  /** Compared against `subject` for `equals`/`exact_match`/`contains`. Ignored for `present`/`absent`. */
   value?: string;
-  /** Node to advance to when the predicate evaluates true. */
+  /** Ordered ELSE IF predicates. Optional — absent for legacy two-branch conditions. */
+  else_ifs?: ElseIfCondition[];
+  /** Node to advance to when the primary predicate evaluates true. */
   true_next: string;
-  /** Node to advance to when it evaluates false. */
+  /** Node to advance to when every predicate evaluates false (OTHER). */
   false_next: string;
 }
 

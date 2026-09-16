@@ -33,6 +33,7 @@ import {
   ArrowUp,
   MousePointerClick,
   List,
+  X,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -61,6 +62,7 @@ import {
   blankListPayload,
 } from "@/components/interactive/interactive-builder"
 import { interactivePayloadPreviewText } from "@/lib/whatsapp/interactive"
+import { MediaSendField } from "@/components/shared/media-upload-field"
 import { createClient } from "@/lib/supabase/client"
 import {
   childPath,
@@ -82,7 +84,9 @@ export interface BuilderStep {
   cid: string
   step_type: AutomationStepType
   step_config: Record<string, unknown>
-  branches?: { yes: BuilderStep[]; no: BuilderStep[] }
+  /** Branch buckets under a condition step, keyed by branch label
+   *  ('yes' | 'else_if_N' | 'no'). Absent for non-condition steps. */
+  branches?: Record<string, BuilderStep[]>
 }
 
 export interface BuilderInitial {
@@ -192,7 +196,7 @@ function blankConfig(type: AutomationStepType): Record<string, unknown> {
     case "wait":
       return { amount: 1, unit: "hours" }
     case "condition":
-      return { subject: "tag_presence", operand: "", value: "" }
+      return { subject: "tag_presence", operand: "", value: "", operator: "contains" }
     case "send_webhook":
       return { url: "", headers: {}, body_template: "" }
     case "close_conversation":
@@ -1207,31 +1211,54 @@ function ConditionBranches({
   path: StepPath
 } & Omit<StepListProps, "steps" | "basePath" | "scope">) {
   const t = useTranslations("Automations.builder")
-  const yes = step.branches?.yes ?? []
-  const no = step.branches?.no ?? []
+  const elseIfs = conditionElseIfs(step.step_config)
+  const branches = step.branches ?? {}
+  const columns: Array<{
+    label: string
+    color: string
+    summary?: string
+    bucket: BuilderStep[]
+    branch: string
+  }> = [
+    // IF — the matching branch of the primary condition.
+    { label: t("branches.yes"), color: "text-primary", bucket: branches.yes ?? [], branch: "yes" },
+    // One column per ELSE IF, first-match-wins. Colors shift away from
+    // the primary accent the deeper the fallback chain goes.
+    ...elseIfs.map((p, i) => ({
+      label: `${t("branches.elseIf")} ${i + 1}`,
+      color: "text-violet-400",
+      summary: predicateSummary(p),
+      bucket: branches[`else_if_${i + 1}`] ?? ([] as BuilderStep[]),
+      branch: `else_if_${i + 1}`,
+    })),
+    // OTHER — the legacy 'no' bucket, renamed for the multi-branch model.
+    { label: t("branches.no"), color: "text-rose-400", bucket: branches.no ?? [], branch: "no" },
+  ]
   return (
-    // Stack Yes/No vertically until THIS CARD is wide enough for two
+    // Stack branches vertically until THIS CARD is wide enough for
     // columns. A viewport breakpoint can't tell: a condition nested in
     // a branch is a fraction of the screen, and `sm:grid-cols-2` split
     // it anyway, leaving two columns too narrow to render a step in.
     <div className="@container mt-3 w-full">
-      <div className="grid grid-cols-1 gap-3 @sm:grid-cols-2">
-        <BranchColumn label={t("branches.yes")} color="text-primary">
-          <StepList
-            {...props}
-            steps={yes}
-            basePath={path}
-            scope={{ kind: "branch", parentCid: step.cid, branch: "yes" }}
-          />
-        </BranchColumn>
-        <BranchColumn label={t("branches.no")} color="text-rose-400">
-          <StepList
-            {...props}
-            steps={no}
-            basePath={path}
-            scope={{ kind: "branch", parentCid: step.cid, branch: "no" }}
-          />
-        </BranchColumn>
+      <div
+        className="grid grid-cols-1 gap-3 @sm:grid-cols-2"
+        style={columns.length > 2 ? { gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))" } : undefined}
+      >
+        {columns.map((col) => (
+          <BranchColumn
+            key={col.branch}
+            label={col.label}
+            color={col.color}
+            summary={col.summary}
+          >
+            <StepList
+              {...props}
+              steps={col.bucket}
+              basePath={path}
+              scope={{ kind: "branch", parentCid: step.cid, branch: col.branch }}
+            />
+          </BranchColumn>
+        ))}
       </div>
     </div>
   )
@@ -1240,18 +1267,99 @@ function ConditionBranches({
 function BranchColumn({
   label,
   color,
+  summary,
   children,
 }: {
   label: string
   color: string
+  summary?: string
   children: React.ReactNode
 }) {
   return (
     <div className="flex min-w-0 flex-col items-center">
-      <div className={cn("mb-2 text-[11px] font-semibold uppercase", color)}>{label}</div>
+      <div className={cn("mb-0.5 text-[11px] font-semibold uppercase", color)}>{label}</div>
+      {summary && (
+        <div className="text-muted-foreground mb-2 max-w-full truncate text-[11px]">
+          {summary}
+        </div>
+      )}
+      {!summary && <div className="mb-2" />}
       {children}
     </div>
   )
+}
+
+// ------------------------------------------------------------
+// Condition else-if helpers — keep step_config.else_ifs and the
+// branch buckets in lockstep. The array index is the source of truth
+// for ORDER; buckets are re-keyed `else_if_<i+1>` from it whenever the
+// list changes, so add/remove anywhere can't orphan children.
+// ------------------------------------------------------------
+
+type PredicateLike = Record<string, unknown>
+
+function conditionElseIfs(cfg: Record<string, unknown>): PredicateLike[] {
+  return Array.isArray(cfg.else_ifs) ? (cfg.else_ifs as PredicateLike[]) : []
+}
+
+function blankElseIfPredicate(): PredicateLike {
+  return { subject: "tag_presence", operand: "", value: "", operator: "contains" }
+}
+
+function syncElseIfBuckets(step: BuilderStep): BuilderStep {
+  const elseIfs = conditionElseIfs(step.step_config)
+  const branches = step.branches ?? {}
+  const next: Record<string, BuilderStep[]> = {
+    yes: branches.yes ?? [],
+    no: branches.no ?? [],
+  }
+  elseIfs.forEach((_, i) => {
+    next[`else_if_${i + 1}`] = branches[`else_if_${i + 1}`] ?? []
+  })
+  return { ...step, branches: next }
+}
+
+function addElseIf(step: BuilderStep): BuilderStep {
+  const elseIfs = conditionElseIfs(step.step_config)
+  return syncElseIfBuckets({
+    ...step,
+    step_config: { ...step.step_config, else_ifs: [...elseIfs, blankElseIfPredicate()] },
+  })
+}
+
+function updateElseIf(step: BuilderStep, index: number, patch: PredicateLike): BuilderStep {
+  const elseIfs = conditionElseIfs(step.step_config).map((p, i) =>
+    i === index ? { ...p, ...patch } : p,
+  )
+  return { ...step, step_config: { ...step.step_config, else_ifs: elseIfs } }
+}
+
+function removeElseIf(step: BuilderStep, index: number): BuilderStep {
+  const elseIfs = conditionElseIfs(step.step_config).filter((_, i) => i !== index)
+  return syncElseIfBuckets({
+    ...step,
+    step_config: { ...step.step_config, else_ifs: elseIfs },
+  })
+}
+
+function predicateSummary(p: PredicateLike | undefined): string {
+  if (!p) return ""
+  const subject = String(p.subject ?? "?")
+  const operand = String(p.operand ?? "")
+  const value = String(p.value ?? "")
+  const op = (p.operator ?? "contains") === "exact_match" ? "=" : "contains"
+  switch (subject) {
+    case "message_content":
+      return `${op === "contains" ? "contains" : "exactly"} "${value}"`
+    case "contact_field":
+      return `${operand} ${op} "${value}"`
+    case "tag_presence":
+      return `has tag ${operand}`
+    case "time_of_day":
+      return `time of day ${operand}`
+    default:
+      return subject
+  }
 }
 
 function AddButton({ onPick }: { onPick: (t: AutomationStepType) => void }) {
@@ -1290,6 +1398,81 @@ function AddButton({ onPick }: { onPick: (t: AutomationStepType) => void }) {
 // Per-step config editor
 // ------------------------------------------------------------
 
+/**
+ * Subject / operand / operator / value fields shared by a condition's
+ * primary predicate and every ELSE IF predicate. `heading` is the
+ * uppercase label rendered above the primary predicate only.
+ */
+function PredicateFields({
+  cfg,
+  onChange,
+  t,
+  heading,
+}: {
+  cfg: Record<string, unknown>
+  onChange: (patch: Record<string, unknown>) => void
+  t: ReturnType<typeof useTranslations>
+  heading: string
+}) {
+  const subject = (cfg.subject as string) ?? "tag_presence"
+  return (
+    <>
+      {heading && (
+        <div className="text-foreground mb-1 text-[11px] font-semibold uppercase">{heading}</div>
+      )}
+      <FieldBlock label={t("config.subjectLabel")}>
+        <select
+          value={subject}
+          onChange={(e) => onChange({ subject: e.target.value })}
+          className="w-full rounded-md border border-border bg-muted px-2 py-1.5 text-sm text-foreground"
+        >
+          <option value="tag_presence">{t("config.subjects.tag_presence")}</option>
+          <option value="contact_field">{t("config.subjects.contact_field")}</option>
+          <option value="message_content">{t("config.subjects.message_content")}</option>
+          <option value="time_of_day">{t("config.subjects.time_of_day")}</option>
+        </select>
+      </FieldBlock>
+      {subject !== "message_content" && (
+        <FieldBlock label={t("config.operandLabel")}>
+          <Input
+            placeholder={
+              subject === "time_of_day"
+                ? t("config.placeholderTime")
+                : subject === "contact_field"
+                  ? t("config.placeholderContact")
+                  : t("config.placeholderTag")
+            }
+            value={(cfg.operand as string) ?? ""}
+            onChange={(e) => onChange({ operand: e.target.value })}
+            className="bg-muted text-foreground"
+          />
+        </FieldBlock>
+      )}
+      {subject === "message_content" && (
+        <FieldBlock label={t("config.operatorLabel")}>
+          <select
+            value={(cfg.operator as string) ?? "contains"}
+            onChange={(e) => onChange({ operator: e.target.value })}
+            className="w-full rounded-md border border-border bg-muted px-2 py-1.5 text-sm text-foreground"
+          >
+            <option value="contains">{t("config.operators.contains")}</option>
+            <option value="exact_match">{t("config.operators.exact_match")}</option>
+          </select>
+        </FieldBlock>
+      )}
+      {(subject === "contact_field" || subject === "message_content") && (
+        <FieldBlock label={t("config.valueLabel")}>
+          <Input
+            value={(cfg.value as string) ?? ""}
+            onChange={(e) => onChange({ value: e.target.value })}
+            className="bg-muted text-foreground"
+          />
+        </FieldBlock>
+      )}
+    </>
+  )
+}
+
 function StepEditor({
   step,
   onChange,
@@ -1305,14 +1488,29 @@ function StepEditor({
   switch (step.step_type) {
     case "send_message":
       return (
-        <FieldBlock label={t("config.messageText")}>
-          <Textarea
-            value={(cfg.text as string) ?? ""}
-            onChange={(e) => set({ text: e.target.value })}
-            placeholder={t("config.placeholderMessageText")}
-            className="min-h-24 bg-muted text-foreground"
-          />
-        </FieldBlock>
+        <>
+          <FieldBlock label={t("config.messageText")}>
+            <Textarea
+              value={(cfg.text as string) ?? ""}
+              onChange={(e) => set({ text: e.target.value })}
+              placeholder={t("config.placeholderMessageText")}
+              className="min-h-24 bg-muted text-foreground"
+            />
+          </FieldBlock>
+          <FieldBlock label={t("config.mediaAttachment")}>
+            <MediaSendField
+              file={
+                cfg.media && typeof cfg.media === "object"
+                  ? (cfg.media as { type?: string; url?: string; filename?: string })
+                  : null
+              }
+              onDone={(kind, url, filename) =>
+                set({ media: { type: kind, url, filename } })
+              }
+              onClear={() => set({ media: undefined })}
+            />
+          </FieldBlock>
+        </>
       )
     case "send_buttons":
     case "send_list":
@@ -1434,6 +1632,7 @@ function StepEditor({
               onChange={(e) => set({ unit: e.target.value })}
               className="w-full rounded-md border border-border bg-muted px-2 py-1.5 text-sm text-foreground"
             >
+              <option value="seconds">{t("config.units.seconds")}</option>
               <option value="minutes">{t("config.units.minutes")}</option>
               <option value="hours">{t("config.units.hours")}</option>
               <option value="days">{t("config.units.days")}</option>
@@ -1441,48 +1640,54 @@ function StepEditor({
           </FieldBlock>
         </div>
       )
-    case "condition":
+    case "condition": {
+      const elseIfs = conditionElseIfs(cfg)
       return (
         <>
-          <FieldBlock label={t("config.subjectLabel")}>
-            <select
-              value={(cfg.subject as string) ?? "tag_presence"}
-              onChange={(e) => set({ subject: e.target.value })}
-              className="w-full rounded-md border border-border bg-muted px-2 py-1.5 text-sm text-foreground"
-            >
-              <option value="tag_presence">{t("config.subjects.tag_presence")}</option>
-              <option value="contact_field">{t("config.subjects.contact_field")}</option>
-              <option value="message_content">{t("config.subjects.message_content")}</option>
-              <option value="time_of_day">{t("config.subjects.time_of_day")}</option>
-            </select>
-          </FieldBlock>
-          <FieldBlock label={t("config.operandLabel")}>
-            <Input
-              placeholder={
-                cfg.subject === "time_of_day"
-                  ? t("config.placeholderTime")
-                  : cfg.subject === "contact_field"
-                  ? t("config.placeholderContact")
-                  : cfg.subject === "tag_presence"
-                  ? t("config.placeholderTag")
-                  : ""
-              }
-              value={(cfg.operand as string) ?? ""}
-              onChange={(e) => set({ operand: e.target.value })}
-              className="bg-muted text-foreground"
-            />
-          </FieldBlock>
-          {(cfg.subject === "contact_field" || cfg.subject === "message_content") && (
-            <FieldBlock label={t("config.valueLabel")}>
-              <Input
-                value={(cfg.value as string) ?? ""}
-                onChange={(e) => set({ value: e.target.value })}
-                className="bg-muted text-foreground"
+          <PredicateFields
+            cfg={cfg}
+            onChange={(patch) => set(patch)}
+            t={t}
+            heading={t("config.ifLabel")}
+          />
+          {elseIfs.map((p, i) => (
+            <div key={i} className="mb-2 rounded-md border border-dashed border-border p-2 last:mb-0">
+              <div className="mb-1 flex items-center justify-between">
+                <span className="text-violet-400 text-[11px] font-semibold uppercase">
+                  {t("config.elseIfLabel")} {i + 1}
+                </span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 gap-1 px-1.5 text-muted-foreground"
+                  onClick={() => onChange(removeElseIf(step, i))}
+                >
+                  <X className="h-3 w-3" />
+                  {t("config.removeElseIf")}
+                </Button>
+              </div>
+              <PredicateFields
+                cfg={p}
+                onChange={(patch) => onChange(updateElseIf(step, i, patch))}
+                t={t}
+                heading=""
               />
-            </FieldBlock>
-          )}
+            </div>
+          ))}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="w-full gap-1"
+            onClick={() => onChange(addElseIf(step))}
+          >
+            <Plus className="h-3.5 w-3.5" />
+            {t("config.addElseIf")}
+          </Button>
         </>
       )
+    }
     case "send_webhook":
       return (
         <>
@@ -1540,7 +1745,7 @@ function previewFor(step: BuilderStep): string {
     case "wait":
       return `${step.step_config.amount ?? "?"} ${step.step_config.unit ?? ""}`
     case "condition":
-      return `when ${step.step_config.subject ?? "?"}`
+      return `when ${predicateSummary(step.step_config) || "?"}`
     case "send_webhook":
       return (step.step_config.url as string) || "no url"
     default:
@@ -1555,7 +1760,7 @@ function previewFor(step: BuilderStep): string {
 interface ApiStep {
   step_type: string
   step_config: Record<string, unknown>
-  branches?: { yes?: ApiStep[]; no?: ApiStep[] }
+  branches?: Record<string, ApiStep[]>
 }
 
 export function toApiSteps(steps: BuilderStep[]): ApiStep[] {
@@ -1563,7 +1768,12 @@ export function toApiSteps(steps: BuilderStep[]): ApiStep[] {
     step_type: s.step_type,
     step_config: s.step_config,
     branches: s.branches
-      ? { yes: toApiSteps(s.branches.yes), no: toApiSteps(s.branches.no) }
+      ? Object.fromEntries(
+          Object.entries(s.branches).map(([label, bucket]) => [
+            label,
+            toApiSteps(bucket),
+          ]),
+        )
       : undefined,
   }))
 }
@@ -1576,20 +1786,27 @@ export interface ServerStepNode {
   id: string
   step_type: string
   step_config: Record<string, unknown>
-  branches: { yes: ServerStepNode[]; no: ServerStepNode[] }
+  branches: Record<string, ServerStepNode[]>
 }
 
 export function fromServerSteps(nodes: ServerStepNode[]): BuilderStep[] {
-  return nodes.map((n) => ({
-    cid: cid(),
-    step_type: n.step_type as AutomationStepType,
-    step_config: n.step_config ?? {},
-    branches:
-      n.step_type === "condition"
-        ? {
-            yes: fromServerSteps(n.branches?.yes ?? []),
-            no: fromServerSteps(n.branches?.no ?? []),
-          }
-        : undefined,
-  }))
+  return nodes.map((n) => {
+    const step: BuilderStep = {
+      cid: cid(),
+      step_type: n.step_type as AutomationStepType,
+      step_config: n.step_config ?? {},
+    }
+    // Conditions: re-key branch buckets from their config else_ifs so
+    // a stale DB label (deleted else-if) can't orphan its children.
+    if (n.step_type === "condition" && n.branches) {
+      step.branches = Object.fromEntries(
+        Object.entries(n.branches).map(([label, bucket]) => [
+          label,
+          fromServerSteps(bucket),
+        ]),
+      )
+      return syncElseIfBuckets(step)
+    }
+    return step
+  })
 }

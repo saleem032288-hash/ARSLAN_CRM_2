@@ -130,4 +130,45 @@ describe("verifyMetaWebhookSignature", () => {
       expect(verifyMetaWebhookSignature(body, signedHeader(body, ""))).toBe(false);
     });
   });
+
+  describe("explicit per-connection secrets (migration 043)", () => {
+    const SECRET_A = "connection-a-secret";
+    const SECRET_B = "connection-b-secret";
+
+    it("accepts a request signed by any of the provided connection secrets", () => {
+      const body = "{}";
+      expect(
+        verifyMetaWebhookSignature(body, signedHeader(body, SECRET_A), [SECRET_A, SECRET_B]),
+      ).toBe(true);
+      expect(
+        verifyMetaWebhookSignature(body, signedHeader(body, SECRET_B), [SECRET_A, SECRET_B]),
+      ).toBe(true);
+    });
+
+    it("uses the provided list instead of the env fallback", () => {
+      const body = "{}";
+      // env META_APP_SECRET (SECRET) is still set here — but the explicit
+      // per-connection list must WIN, so a signature made with SECRET is
+      // rejected while one made with a listed secret passes.
+      expect(
+        verifyMetaWebhookSignature(body, signedHeader(body, SECRET), [SECRET_A]),
+      ).toBe(false);
+      expect(
+        verifyMetaWebhookSignature(body, signedHeader(body, SECRET_A), [SECRET_A]),
+      ).toBe(true);
+    });
+
+    it("rejects when the provided list is empty and env is unset", () => {
+      const originalSecret = process.env.META_APP_SECRET;
+      delete process.env.META_APP_SECRET;
+      try {
+        const body = "{}";
+        expect(
+          verifyMetaWebhookSignature(body, signedHeader(body, SECRET_A), []),
+        ).toBe(false);
+      } finally {
+        process.env.META_APP_SECRET = originalSecret;
+      }
+    });
+  });
 });

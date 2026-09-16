@@ -13,6 +13,8 @@ interface ConversationsChartProps {
   /** Per-range data, so switching tabs never re-fetches. */
   series: Record<RangeDays, ConversationsSeriesPoint[] | null>
   loading: boolean
+  /** True when the last fetch failed, so we show an error instead of a skeleton. */
+  error?: boolean
   range: RangeDays
   onRangeChange: (r: RangeDays) => void
 }
@@ -29,8 +31,9 @@ const PADDING = { top: 16, right: 16, bottom: 28, left: 40 }
 
 import { useTranslations } from 'next-intl'
 
-export function ConversationsChart({ series, loading, range, onRangeChange }: ConversationsChartProps) {
+export function ConversationsChart({ series, loading, error, range, onRangeChange }: ConversationsChartProps) {
   const t = useTranslations('Dashboard.conversationsChart')
+  const tPage = useTranslations('Dashboard.page')
   const data = series[range]
 
   // Memoise the max so per-day hover math doesn't recompute it.
@@ -75,8 +78,10 @@ export function ConversationsChart({ series, loading, range, onRangeChange }: Co
       </header>
 
       <div className="p-5">
-        {loading || !data ? (
+        {loading ? (
           <Skeleton className="h-[240px] w-full" />
+        ) : error || !data ? (
+          <EmptyState title={tPage('loadError')} />
         ) : data.every((p) => p.incoming === 0 && p.outgoing === 0) ? (
           <EmptyState
             icon={MessageSquare}

@@ -122,7 +122,7 @@ export async function GET() {
 
     const { data: config, error: configError } = await supabase
       .from('whatsapp_config')
-      .select('phone_number_id, waba_id, access_token, status')
+      .select('phone_number_id, waba_id, app_id, app_secret, access_token, status')
       .eq('account_id', accountId)
       .maybeSingle()
 
@@ -202,7 +202,12 @@ export async function GET() {
     if (config.waba_id) {
       try {
         const subs = await getSubscribedApps({ wabaId: config.waba_id, accessToken })
-        const state = appSubscriptionState(subs, process.env.META_APP_ID)
+        // Use the per-connection app_id (migration 043); fall back to
+        // env for legacy rows or deployments that haven't migrated yet.
+        const state = appSubscriptionState(
+          subs,
+          config.app_id ?? process.env.META_APP_ID,
+        )
         wabaSubscription = {
           checked: true,
           subscribed: state.subscribed,
@@ -219,9 +224,25 @@ export async function GET() {
       }
     }
 
+    // Check if app_secret is stored and decryptable (migration 043).
+    // Never return the raw secret — only a boolean so the UI knows
+    // whether the field needs re-entry.
+    let appSecretSet = false
+    if (config.app_secret) {
+      try {
+        decrypt(config.app_secret)
+        appSecretSet = true
+      } catch {
+        // Corrupted / wrong key — treat as missing; the operator can
+        // re-save to repair.
+      }
+    }
+
     return NextResponse.json({
       connected: true,
       phone_info: phoneInfo,
+      app_id: config.app_id ?? null,
+      app_secret_set: appSecretSet,
       waba_subscription: wabaSubscription,
     })
   } catch (error) {
@@ -266,14 +287,23 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json()
-    const { phone_number_id, waba_id, access_token, verify_token, pin } = body
+    const { phone_number_id, waba_id, access_token, verify_token, pin, app_id, app_secret } = body
 
-    if (!access_token || !phone_number_id) {
+    if (!phone_number_id) {
       return NextResponse.json(
-        { error: 'access_token and phone_number_id are required' },
+        { error: 'phone_number_id is required' },
         { status: 400 }
       )
     }
+
+    // Fetch existing config early — needed to decide whether a
+    // missing access_token / app_secret means "use stored value"
+    // (update) vs "first-time setup" (reject).
+    const { data: existing } = await supabase
+      .from('whatsapp_config')
+      .select('id, registered_at, phone_number_id, access_token, app_secret, app_id')
+      .eq('account_id', accountId)
+      .maybeSingle()
 
     // Meta ids are decimal digit strings. Catch the classic paste
     // mistakes (the +phone number, a display name, a URL) here with a
@@ -299,6 +329,16 @@ export async function POST(request: Request) {
         { status: 400 }
       )
     }
+    if (app_id !== undefined && app_id !== null && app_id !== '' && !isNumericMetaId(app_id)) {
+      return NextResponse.json(
+        {
+          error:
+            'Meta App ID must contain only digits — copy it from Meta → App Settings → Basic.',
+          field: 'app_id',
+        },
+        { status: 400 }
+      )
+    }
     const metaCtx: MetaErrorContext = { phoneNumberId: phone_number_id, wabaId: waba_id || null }
 
     if (pin !== undefined && pin !== null && pin !== '') {
@@ -309,6 +349,63 @@ export async function POST(request: Request) {
         )
       }
     }
+
+    // ── Resolve the access token to use for Meta verification ──────
+    // On first save, the user must supply one. On an update the user
+    // may omit it (keep stored encrypted token) or supply a new one.
+    let effectiveAccessToken: string
+    if (access_token && access_token.trim()) {
+      effectiveAccessToken = access_token.trim()
+    } else if (existing?.access_token) {
+      try {
+        effectiveAccessToken = decrypt(existing.access_token)
+      } catch (err) {
+        console.error('[whatsapp/config POST] Stored token undecryptable:', err)
+        return NextResponse.json(
+          {
+            error:
+              'Stored access token cannot be decrypted — re-enter it to proceed.',
+            field: 'access_token',
+          },
+          { status: 400 },
+        )
+      }
+    } else {
+      return NextResponse.json(
+        { error: 'Access token is required for initial setup.', field: 'access_token' },
+        { status: 400 },
+      )
+    }
+
+    // ── Resolve the Meta App Secret ────────────────────────────────
+    // Required on a new connection; optional on update (keep stored).
+    // Legacy deployments with META_APP_SECRET set keep working without
+    // entering one per connection.
+    let effectiveAppSecret: string | null = null
+    if (app_secret && app_secret.trim() && app_secret.trim() !== '••••••••••••••••') {
+      effectiveAppSecret = app_secret.trim()
+    } else if (existing?.app_secret) {
+      // Reuse the stored encrypted secret — no change needed.
+      effectiveAppSecret = null // signal: don't re-encrypt
+    }
+
+    if (!effectiveAppSecret && !existing?.app_secret) {
+      const envSecret = process.env.META_APP_SECRET
+      const hasEnvFallback = Boolean(envSecret && envSecret.trim())
+      if (!hasEnvFallback) {
+        return NextResponse.json(
+          {
+            error:
+              'Meta App Secret is required for a new connection. Enter it here so webhook signatures can be verified per-connection.',
+            field: 'app_secret',
+          },
+          { status: 400 },
+        )
+      }
+    }
+
+    // ── Resolve the Meta App ID ────────────────────────────────────
+    const effectiveAppId = (app_id && app_id.trim()) || existing?.app_id || null
 
     // Reject if another account has already claimed this phone_number_id.
     // wacrm is single-tenant-per-WhatsApp-number — letting two accounts
@@ -347,7 +444,7 @@ export async function POST(request: Request) {
     try {
       phoneInfo = await verifyPhoneNumber({
         phoneNumberId: phone_number_id,
-        accessToken: access_token,
+        accessToken: effectiveAccessToken,
       })
     } catch (err) {
       return metaFailure(err, 'verify_number', metaCtx)
@@ -362,7 +459,7 @@ export async function POST(request: Request) {
       try {
         wabaNumbers = await listWabaPhoneNumbers({
           wabaId: waba_id,
-          accessToken: access_token,
+          accessToken: effectiveAccessToken,
         })
       } catch (err) {
         return metaFailure(err, 'waba_phone_numbers', metaCtx)
@@ -388,10 +485,20 @@ export async function POST(request: Request) {
 
     // Encrypt sensitive tokens before storing
     let encryptedAccessToken: string
-    let encryptedVerifyToken: string | null
+    // null signals "no new value supplied" — like app_secret below, we
+    // must NOT overwrite the stored verify_token with null on a save
+    // that only changes other fields. Clobbering it would silently break
+    // the webhook GET handshake (Meta's verification token no longer
+    // matches), so inbound events stop arriving while the UI still reads
+    // "connected".
+    let encryptedVerifyToken: string | null = null
+    let encryptedAppSecret: string | null = null
     try {
-      encryptedAccessToken = encrypt(access_token)
-      encryptedVerifyToken = verify_token ? encrypt(verify_token) : null
+      encryptedAccessToken = encrypt(effectiveAccessToken)
+      if (verify_token && verify_token.trim()) {
+        encryptedVerifyToken = encrypt(verify_token.trim())
+      }
+      if (effectiveAppSecret) encryptedAppSecret = encrypt(effectiveAppSecret)
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown encryption error'
       console.error('Encryption failed:', message)
@@ -403,15 +510,6 @@ export async function POST(request: Request) {
         { status: 500 }
       )
     }
-
-    // Look up any pre-existing row for this account so we know whether
-    // this number is already registered with Meta — if so we can skip
-    // /register when the user didn't provide a PIN this time around.
-    const { data: existing } = await supabase
-      .from('whatsapp_config')
-      .select('id, registered_at, phone_number_id')
-      .eq('account_id', accountId)
-      .maybeSingle()
 
     const sameNumber =
       existing?.phone_number_id === phone_number_id &&
@@ -449,7 +547,7 @@ export async function POST(request: Request) {
         try {
           await registerPhoneNumber({
             phoneNumberId: phone_number_id,
-            accessToken: access_token,
+            accessToken: effectiveAccessToken,
             pin,
           })
           registeredAt = new Date().toISOString()
@@ -482,7 +580,7 @@ export async function POST(request: Request) {
       try {
         await subscribeWabaToApp({
           wabaId: waba_id,
-          accessToken: access_token,
+          accessToken: effectiveAccessToken,
         })
         subscribedAppsAt = new Date().toISOString()
       } catch (err) {
@@ -493,9 +591,10 @@ export async function POST(request: Request) {
     // Persist everything in one shot. If /register failed we still
     // store the credentials and the error so the UI can guide the
     // user through a retry.
-    const baseRow = {
+    const baseRow: Record<string, unknown> = {
       phone_number_id,
       waba_id: waba_id || null,
+      app_id: effectiveAppId,
       access_token: encryptedAccessToken,
       verify_token: encryptedVerifyToken,
       status: registrationError ? 'disconnected' : 'connected',
@@ -505,6 +604,13 @@ export async function POST(request: Request) {
       last_registration_error: registrationError,
       updated_at: new Date().toISOString(),
     }
+    // Only write app_secret when we have a fresh encrypted value.
+    // Omitting it on UPDATE preserves the existing stored secret.
+    if (encryptedAppSecret) baseRow.app_secret = encryptedAppSecret
+    // Same rule for verify_token: on UPDATE a blank field means "leave
+    // the stored token alone", not "clear it". A brand-new row still
+    // writes null when none was given.
+    if (!encryptedVerifyToken && existing) delete baseRow.verify_token
 
     if (existing) {
       const { error: updateError } = await supabase

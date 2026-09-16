@@ -19,6 +19,8 @@ import { Skeleton } from './skeleton'
 interface ActivityFeedProps {
   items: ActivityItem[] | null
   loading: boolean
+  /** True when the last fetch failed, so we show an error instead of a skeleton. */
+  error?: boolean
 }
 
 const PAGE_SIZES = [5, 10, 20, 50] as const
@@ -40,8 +42,9 @@ const KIND_THEME: Record<ActivityKind, KindTheme> = {
 
 import { useTranslations } from 'next-intl'
 
-export function ActivityFeed({ items, loading }: ActivityFeedProps) {
+export function ActivityFeed({ items, loading, error }: ActivityFeedProps) {
   const t = useTranslations('Dashboard.activityFeed')
+  const tPage = useTranslations('Dashboard.page')
   // Start at 5 — a quick scan of the most recent events without
   // dominating vertical real estate. User expands explicitly via the
   // footer control when they want deeper history.
@@ -68,11 +71,15 @@ export function ActivityFeed({ items, loading }: ActivityFeedProps) {
         </Link>
       </header>
 
-      {loading || !items ? (
+      {loading ? (
         <div className="space-y-2 p-5">
           {Array.from({ length: 5 }).map((_, i) => (
             <Skeleton key={i} className="h-10 w-full" />
           ))}
+        </div>
+      ) : error || !items ? (
+        <div className="p-5">
+          <EmptyState title={tPage('loadError')} />
         </div>
       ) : items.length === 0 ? (
         <div className="p-5">

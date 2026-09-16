@@ -24,7 +24,7 @@ export interface ValidationIssue {
 interface StepLike {
   step_type: string
   step_config: Record<string, unknown>
-  branches?: { yes?: StepLike[]; no?: StepLike[] }
+  branches?: Record<string, StepLike[]>
 }
 
 export function validateStepsForActivation(steps: StepLike[]): ValidationIssue[] {
@@ -45,8 +45,9 @@ function walk(steps: StepLike[], prefix: string, issues: ValidationIssue[]): voi
     const path = `${prefix}steps[${i}]`
     validateOne(s, path, issues)
     if (s.step_type === 'condition' && s.branches) {
-      if (s.branches.yes) walk(s.branches.yes, `${path}.yes.`, issues)
-      if (s.branches.no) walk(s.branches.no, `${path}.no.`, issues)
+      for (const [label, bucket] of Object.entries(s.branches)) {
+        if (bucket && bucket.length > 0) walk(bucket, `${path}.${label}.`, issues)
+      }
     }
   })
 }
@@ -54,11 +55,26 @@ function walk(steps: StepLike[], prefix: string, issues: ValidationIssue[]): voi
 function validateOne(step: StepLike, path: string, issues: ValidationIssue[]): void {
   const c = step.step_config ?? {}
   switch (step.step_type) {
-    case 'send_message':
-      if (!nonEmpty(c.text)) {
-        issues.push({ path: `${path}.text`, message: 'message text is required' })
+    case 'send_message': {
+      const media = typeof c.media === 'object' && c.media !== null
+        ? (c.media as { type?: unknown; url?: unknown })
+        : undefined
+      if (!nonEmpty(c.text) && !(media && typeof media.url === 'string' && media.url.trim())) {
+        issues.push({
+          path: `${path}.text`,
+          message: 'message text or an image/video attachment is required',
+        })
+      }
+      if (media && media.url) {
+        if (media.type !== 'image' && media.type !== 'video') {
+          issues.push({ path: `${path}.media.type`, message: 'only image or video attachments are supported' })
+        }
+        if (typeof media.url !== 'string' || !media.url.trim()) {
+          issues.push({ path: `${path}.media.url`, message: 'attachment needs an uploaded file' })
+        }
       }
       break
+    }
     case 'send_buttons':
     case 'send_list': {
       // The whole step_config IS the interactive payload; validate it
@@ -111,20 +127,19 @@ function validateOne(step: StepLike, path: string, issues: ValidationIssue[]): v
       if (typeof c.amount !== 'number' || !Number.isFinite(c.amount) || c.amount <= 0) {
         issues.push({ path: `${path}.amount`, message: 'wait amount must be greater than 0' })
       }
-      if (!['minutes', 'hours', 'days'].includes(String(c.unit))) {
+      if (!['seconds', 'minutes', 'hours', 'days'].includes(String(c.unit))) {
         issues.push({
           path: `${path}.unit`,
-          message: 'wait unit must be minutes, hours, or days',
+          message: 'wait unit must be seconds, minutes, hours, or days',
         })
       }
       break
     case 'condition':
-      if (!nonEmpty(c.subject)) {
-        issues.push({ path: `${path}.subject`, message: 'condition subject is required' })
-      }
-      if (!nonEmpty(c.operand)) {
-        issues.push({ path: `${path}.operand`, message: 'condition operand is required' })
-      }
+      validatePredicate(c, path, issues)
+      const elseIfs = Array.isArray(c.else_ifs) ? c.else_ifs : []
+      elseIfs.forEach((ei, i) => {
+        validatePredicate(ei as Record<string, unknown>, `${path}.else_ifs[${i}]`, issues)
+      })
       break
     case 'send_webhook':
       if (!nonEmpty(c.url)) {
@@ -210,4 +225,30 @@ export function validateTriggerForActivation(
 
 function nonEmpty(v: unknown): boolean {
   return typeof v === 'string' && v.trim().length > 0
+}
+
+function validatePredicate(
+  c: Record<string, unknown>,
+  path: string,
+  issues: ValidationIssue[],
+): void {
+  if (!nonEmpty(c.subject)) {
+    issues.push({ path: `${path}.subject`, message: 'condition subject is required' })
+  }
+  if (!nonEmpty(c.operand)) {
+    issues.push({ path: `${path}.operand`, message: 'condition operand is required' })
+  }
+  if (c.subject === 'message_content' && !nonEmpty(c.value)) {
+    issues.push({ path: `${path}.value`, message: 'condition value is required' })
+  }
+  if (
+    c.operator != null &&
+    c.operator !== 'contains' &&
+    c.operator !== 'exact_match'
+  ) {
+    issues.push({
+      path: `${path}.operator`,
+      message: 'condition operator must be "contains" or "exact_match"',
+    })
+  }
 }

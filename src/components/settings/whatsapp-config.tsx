@@ -32,6 +32,15 @@ import {
 } from '@/components/ui/accordion';
 import type { WhatsAppConfig as WhatsAppConfigType } from '@/types';
 
+// The form never reads the encrypted credential columns — the client
+// select excludes them (see fetchConfig) so RLS-granted account members
+// can't pull ciphertext out of the row. This is the shape actually
+// fetched.
+type WhatsAppConfigRow = Omit<
+  WhatsAppConfigType,
+  'access_token' | 'verify_token' | 'app_secret'
+>;
+
 const MASKED_TOKEN = '••••••••••••••••';
 
 type ConnectionStatus = 'connected' | 'disconnected' | 'unknown';
@@ -81,7 +90,7 @@ export function WhatsAppConfig() {
   const [testing, setTesting] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [showToken, setShowToken] = useState(false);
-  const [config, setConfig] = useState<WhatsAppConfigType | null>(null);
+  const [config, setConfig] = useState<WhatsAppConfigRow | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('unknown');
   const [resetReason, setResetReason] = useState<ResetReason>(null);
   const [statusMessage, setStatusMessage] = useState<string>('');
@@ -100,6 +109,9 @@ export function WhatsAppConfig() {
 
   const [phoneNumberId, setPhoneNumberId] = useState('');
   const [wabaId, setWabaId] = useState('');
+  const [appId, setAppId] = useState('');
+  const [appSecret, setAppSecret] = useState('');
+  const [appSecretEdited, setAppSecretEdited] = useState(false);
   const [accessToken, setAccessToken] = useState('');
   const [verifyToken, setVerifyToken] = useState('');
   const [pin, setPin] = useState('');
@@ -148,9 +160,18 @@ export function WhatsAppConfig() {
       // account sees the same saved configuration. UNIQUE(account_id)
       // on the table guarantees the .maybeSingle() return type
       // remains accurate.
+      //
+      // Explicit column list — NEVER `select('*')`. The row holds
+      // AES-256-GCM-encrypted `access_token`, `verify_token` and
+      // `app_secret`; RLS lets every account member read the row, so a
+      // wildcard shipped those ciphertexts to every teammate's browser.
+      // The server GET below reports `app_secret_set` so the form can
+      // still show the masked placeholder without touching the secret.
       const { data, error } = await supabase
         .from('whatsapp_config')
-        .select('*')
+        .select(
+          'id, account_id, user_id, phone_number_id, waba_id, app_id, status, connected_at, registered_at, subscribed_apps_at, last_registration_error, mirror_inbound_media, created_at, updated_at'
+        )
         .eq('account_id', acctId)
         .maybeSingle();
 
@@ -162,6 +183,12 @@ export function WhatsAppConfig() {
         setConfig(data);
         setPhoneNumberId(data.phone_number_id || '');
         setWabaId(data.waba_id || '');
+        setAppId(data.app_id || '');
+        // Corrected from the server health check's `app_secret_set`
+        // below; kept blank here so no secret-derived value is read
+        // from the row.
+        setAppSecret('');
+        setAppSecretEdited(false);
         setAccessToken(MASKED_TOKEN);
         setVerifyToken('');
         setPin('');
@@ -173,6 +200,9 @@ export function WhatsAppConfig() {
         setConfig(null);
         setPhoneNumberId('');
         setWabaId('');
+        setAppId('');
+        setAppSecret('');
+        setAppSecretEdited(false);
         setAccessToken('');
         setVerifyToken('');
         setPin('');
@@ -187,6 +217,14 @@ export function WhatsAppConfig() {
         try {
           const res = await fetch('/api/whatsapp/config', { method: 'GET' });
           const payload = await res.json();
+
+          // Server now reports whether a decryptable app_secret is
+          // stored; use it to render the masked placeholder instead of
+          // reading the (no-longer-selected) ciphertext from the row.
+          if (typeof payload.app_secret_set === 'boolean') {
+            setAppSecret(payload.app_secret_set ? MASKED_TOKEN : '');
+            setAppSecretEdited(false);
+          }
 
           if (payload.connected) {
             setConnectionStatus('connected');
@@ -261,6 +299,12 @@ export function WhatsAppConfig() {
   }
 
   async function handleSave() {
+    // RLS only lets admins/owners write whatsapp_config; a viewer's save
+    // would match zero rows and look like it worked. Refuse up front.
+    if (!canEditSettings) {
+      toast.error(t('adminOnlyConfig'));
+      return;
+    }
     if (!phoneNumberId.trim()) {
       toast.error(t('phoneNumberIdRequired'));
       return;
@@ -273,8 +317,19 @@ export function WhatsAppConfig() {
       toast.error(t('wabaIdNotNumeric'));
       return;
     }
+    if (appId.trim() && !META_ID_RE.test(appId.trim())) {
+      toast.error(t('appIdNotNumeric'));
+      return;
+    }
     if (!config && (!accessToken.trim() || !tokenEdited)) {
       toast.error(t('accessTokenRequired'));
+      return;
+    }
+    // First-time connections must carry their own Meta App Secret —
+    // that's what lets the webhook verify signatures per connection
+    // without a global env var.
+    if (!config && (!appSecret.trim() || !appSecretEdited)) {
+      toast.error(t('appSecretRequired'));
       return;
     }
 
@@ -288,6 +343,7 @@ export function WhatsAppConfig() {
       const payload: Record<string, unknown> = {
         phone_number_id: phoneNumberId.trim(),
         waba_id: wabaId.trim() || null,
+        app_id: appId.trim() || null,
         verify_token: verifyToken.trim() || null,
         // Optional — only sent when the user filled it in. The server
         // requires it on first save or when changing numbers; for a
@@ -295,16 +351,12 @@ export function WhatsAppConfig() {
         pin: pin.trim() || null,
       };
 
+      if (appSecretEdited && appSecret !== MASKED_TOKEN && appSecret.trim()) {
+        payload.app_secret = appSecret.trim();
+      }
+
       if (tokenEdited && accessToken !== MASKED_TOKEN && accessToken.trim()) {
         payload.access_token = accessToken.trim();
-      } else if (config) {
-        // Existing config — reuse stored encrypted token by decrypting on the
-        // server. But our POST handler requires an access_token to verify
-        // with Meta. If the user didn't change the token, we need to signal
-        // that. Simplest: require token re-entry if they're updating.
-        toast.error(t('reenterAccessToken'));
-        setSaving(false);
-        return;
       }
 
       const res = await fetch('/api/whatsapp/config', {
@@ -436,6 +488,10 @@ export function WhatsAppConfig() {
   }
 
   async function handleReset() {
+    if (!canEditSettings) {
+      toast.error(t('adminOnlyConfig'));
+      return;
+    }
     if (!confirm(t('resetConfirm'))) {
       return;
     }
@@ -454,6 +510,9 @@ export function WhatsAppConfig() {
       setConfig(null);
       setPhoneNumberId('');
       setWabaId('');
+      setAppId('');
+      setAppSecret('');
+      setAppSecretEdited(false);
       setAccessToken('');
       setVerifyToken('');
       setTokenEdited(false);
@@ -755,6 +814,47 @@ export function WhatsAppConfig() {
             </div>
 
             <div className="space-y-2">
+              <Label className="text-muted-foreground">{t('metaAppId')}</Label>
+              <Input
+                placeholder={t('metaAppIdPlaceholder')}
+                value={appId}
+                onChange={(e) => setAppId(e.target.value)}
+                className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
+              />
+              <p className="text-xs text-muted-foreground">
+                {t('metaAppIdHint')}
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-muted-foreground">{t('metaAppSecret')}</Label>
+              <Input
+                type="password"
+                placeholder={t('metaAppSecretPlaceholder')}
+                value={appSecret}
+                onChange={(e) => {
+                  setAppSecret(e.target.value);
+                  setAppSecretEdited(true);
+                }}
+                onFocus={() => {
+                  if (appSecret === MASKED_TOKEN) {
+                    setAppSecret('');
+                    setAppSecretEdited(true);
+                  }
+                }}
+                className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
+              />
+              <p className="text-xs text-muted-foreground">
+                {t('metaAppSecretHint')}
+              </p>
+              {config && !appSecretEdited && (
+                <p className="text-xs text-muted-foreground">
+                  {t('appSecretHidden')}
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-2">
               <Label className="text-muted-foreground">{t('accessToken')}</Label>
               <div className="relative">
                 <Input
@@ -892,10 +992,11 @@ export function WhatsAppConfig() {
         )}
 
         {/* Action Buttons */}
-        <div className="flex flex-wrap gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <Button
             onClick={handleSave}
-            disabled={saving}
+            disabled={saving || !canEditSettings}
+            title={!canEditSettings ? t('adminOnlyConfig') : undefined}
             className="bg-primary hover:bg-primary/90 text-primary-foreground"
           >
             {saving ? (
@@ -929,7 +1030,8 @@ export function WhatsAppConfig() {
             <Button
               variant="outline"
               onClick={handleReset}
-              disabled={resetting}
+              disabled={resetting || !canEditSettings}
+              title={!canEditSettings ? t('adminOnlyConfig') : undefined}
               className="border-red-900 text-red-400 hover:text-red-300 hover:bg-red-950/40"
             >
               {resetting ? (
@@ -946,6 +1048,11 @@ export function WhatsAppConfig() {
             </Button>
           )}
         </div>
+        {!canEditSettings && (
+          <p className="text-xs text-muted-foreground">
+            {t('adminOnlyConfig')}
+          </p>
+        )}
       </div>
 
       {/* Setup Instructions Sidebar */}

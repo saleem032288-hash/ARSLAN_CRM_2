@@ -516,6 +516,53 @@ describe("validateFlowForActivation — send_media", () => {
   });
 });
 
+describe("validateFlowForActivation — send_message media", () => {
+  const baseFlow = { ...validFlow, entry_node_id: "s" };
+  const nodesWith = (config: Record<string, unknown>) => [
+    { node_key: "s", node_type: "start", config: { next_node_key: "m" } },
+    { node_key: "m", node_type: "send_message", config },
+    { node_key: "h", node_type: "handoff", config: {} },
+  ];
+
+  it("accepts an image attachment", () => {
+    const issues = validateFlowForActivation(
+      baseFlow,
+      nodesWith({
+        text: "Menu photo",
+        media: { type: "image", url: "https://cdn.example/menu.png" },
+        next_node_key: "h",
+      }),
+    );
+    expect(issues.filter((i) => i.node_key === "m")).toEqual([]);
+  });
+
+  it("accepts a video attachment", () => {
+    const issues = validateFlowForActivation(
+      baseFlow,
+      nodesWith({
+        media: { type: "video", url: "https://cdn.example/intro.mp4" },
+        next_node_key: "h",
+      }),
+    );
+    expect(issues.filter((i) => i.node_key === "m")).toEqual([]);
+  });
+
+  it("rejects an unsupported media kind", () => {
+    const issues = validateFlowForActivation(
+      baseFlow,
+      nodesWith({
+        media: { type: "document", url: "https://cdn.example/f.pdf" },
+        next_node_key: "h",
+      }),
+    );
+    expect(
+      issues.some(
+        (i) => i.node_key === "m" && i.field === "media.type" && i.message.includes("image or video"),
+      ),
+    ).toBe(true);
+  });
+});
+
 describe("reachableFromEntry", () => {
   it("walks the graph from the entry", () => {
     const set = reachableFromEntry("start", validNodes);

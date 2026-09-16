@@ -3,10 +3,18 @@ import { getCurrentAccount, requireRole, toErrorResponse } from '@/lib/auth/acco
 import { supabaseAdmin } from '@/lib/automations/admin-client'
 import { validateInteractivePayload } from '@/lib/whatsapp/interactive'
 
-// Quick replies — reusable snippets (plain text or a saved interactive
-// message) shared across the account. GET lists; POST creates. Mirrors
-// the automations route: RLS-scoped read via the user client, service-
-// role write after an explicit role check.
+// Quick replies — reusable snippets (plain text, a saved interactive
+// message, or a media file with an optional caption) shared across the
+// account. GET lists; POST creates. Mirrors the automations route:
+// RLS-scoped read via the user client, service-role write after an
+// explicit role check.
+
+const MEDIA_KINDS = ['image', 'video', 'document', 'audio'] as const
+type MediaKind = (typeof MEDIA_KINDS)[number]
+
+function isMediaKind(value: unknown): value is MediaKind {
+  return typeof value === 'string' && (MEDIA_KINDS as readonly string[]).includes(value)
+}
 
 export async function GET() {
   try {
@@ -35,13 +43,16 @@ export async function POST(request: Request) {
   if (!body) return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
 
   const title = typeof body.title === 'string' ? body.title.trim() : ''
-  const kind = body.kind === 'interactive' ? 'interactive' : 'text'
+  const kind =
+    body.kind === 'interactive' ? 'interactive' : body.kind === 'media' ? 'media' : 'text'
   if (!title) {
     return NextResponse.json({ error: 'title is required' }, { status: 400 })
   }
 
   let content_text: string | null = null
   let interactive_payload: unknown = null
+  let media_type: string | null = null
+  let media_url: string | null = null
 
   if (kind === 'interactive') {
     const result = validateInteractivePayload(body.interactive_payload)
@@ -49,6 +60,27 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: result.error }, { status: 400 })
     }
     interactive_payload = body.interactive_payload
+  } else if (kind === 'media') {
+    // Media quick replies carry a file in storage + an optional caption.
+    // The URL is persisted as-is (no re-upload on send — the picker hands
+    // the composer the same URL the manager saved).
+    const mediaType = body.media_type
+    if (!isMediaKind(mediaType)) {
+      return NextResponse.json(
+        { error: 'media_type is required (image, video, document, or audio)' },
+        { status: 400 },
+      )
+    }
+    const mediaUrl = typeof body.media_url === 'string' ? body.media_url.trim() : ''
+    if (!mediaUrl) {
+      return NextResponse.json(
+        { error: 'media_url is required for media quick replies' },
+        { status: 400 },
+      )
+    }
+    media_type = mediaType
+    media_url = mediaUrl
+    content_text = typeof body.content_text === 'string' ? body.content_text : null
   } else {
     const text = typeof body.content_text === 'string' ? body.content_text : ''
     if (!text.trim()) {
@@ -69,6 +101,8 @@ export async function POST(request: Request) {
       kind,
       content_text,
       interactive_payload,
+      media_type,
+      media_url,
     })
     .select()
     .single()

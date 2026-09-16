@@ -88,6 +88,52 @@ describe('validateInteractivePayload — buttons', () => {
       validateInteractivePayload({ ...validButtons, buttons: [{ id: 'a', title: '' }] }).ok,
     ).toBe(false)
   })
+
+  describe('URL buttons (Meta CTA URL)', () => {
+    const urlButton = { kind: 'buttons' as const, body: 'Visit us', buttons: [
+      { id: 'b1', title: 'Open', type: 'url' as const, url: 'https://example.com' },
+    ] }
+
+    it('accepts a single URL button with a valid http(s) link', () => {
+      expect(validateInteractivePayload(urlButton)).toEqual({ ok: true })
+    })
+
+    it('rejects a URL button with a malformed or missing URL', () => {
+      expect(validateInteractivePayload({ ...urlButton, buttons: [
+        { ...urlButton.buttons[0], url: 'not a url' },
+      ] }).ok).toBe(false)
+      const missing = { ...urlButton, buttons: [{ ...urlButton.buttons[0], url: undefined }] }
+      expect(validateInteractivePayload(missing).ok).toBe(false)
+    })
+
+    it('rejects URL buttons combined with quick-reply buttons', () => {
+      const mixed = {
+        ...validButtons,
+        buttons: [
+          { id: 'a', title: 'Reply' },
+          { id: 'b', title: 'Open', type: 'url' as const, url: 'https://example.com' },
+        ],
+      }
+      expect(validateInteractivePayload(mixed).ok).toBe(false)
+    })
+
+    it('rejects more than one URL button', () => {
+      const two = {
+        ...validButtons,
+        buttons: [
+          { id: 'a', title: 'A', type: 'url' as const, url: 'https://a.example' },
+          { id: 'b', title: 'B', type: 'url' as const, url: 'https://b.example' },
+        ],
+      }
+      expect(validateInteractivePayload(two).ok).toBe(false)
+    })
+
+    it('still requires a label on the URL button', () => {
+      expect(validateInteractivePayload({ ...urlButton, buttons: [
+        { id: 'b1', title: '', type: 'url' as const, url: 'https://example.com' },
+      ] }).ok).toBe(false)
+    })
+  })
 })
 
 describe('validateInteractivePayload — list', () => {

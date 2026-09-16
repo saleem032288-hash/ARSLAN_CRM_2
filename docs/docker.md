@@ -11,7 +11,7 @@ is included.
 1. Copy the env template and fill it in:
 
    ```bash
-   cp .env.local.example .env.local
+   cp .env.example .env.local
    ```
 
 2. Build and start (the `--env-file` flag is required — Compose only
@@ -72,5 +72,5 @@ docker run -d --env-file .env.local -e PORT=3000 -p 3000:3000 wacrm
   Wait steps or flows, point an external scheduler at
   `GET /api/automations/cron` and `GET /api/flows/cron` on this
   deployment, sending the shared secret in the `x-cron-secret` header
-  (`AUTOMATION_CRON_SECRET`, see `.env.local.example`). Both return
+  (`AUTOMATION_CRON_SECRET`, see `.env.example`). Both return
   503 until that variable is set.

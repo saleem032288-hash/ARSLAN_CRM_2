@@ -20,6 +20,7 @@
  *   - `button:<reply_id>` for send_buttons rows
  *   - `row:<reply_id>`    for send_list rows
  *   - `true` / `false`    for condition branches
+ *   - `else_if_N`         for ELSE IF branches (N = 1-based index)
  */
 
 import type { BuilderNode } from "@/components/flows/shared";
@@ -62,8 +63,18 @@ export function deriveCanvasEdges(nodes: BuilderNode[]): CanvasEdge[] {
       }
 
       case "condition": {
-        const trueNext = (cfg as { true_next?: string }).true_next;
-        const falseNext = (cfg as { false_next?: string }).false_next;
+        const cfg = node.config as {
+          true_next?: string;
+          false_next?: string;
+          else_ifs?: Array<{
+            next_node_key?: string;
+            subject?: string;
+            subject_key?: string;
+            operator?: string;
+            value?: string;
+          }>;
+        };
+        const trueNext = cfg.true_next;
         if (trueNext && knownKeys.has(trueNext)) {
           edges.push({
             id: `${node.node_key}--true--${trueNext}`,
@@ -73,6 +84,19 @@ export function deriveCanvasEdges(nodes: BuilderNode[]): CanvasEdge[] {
             label: "true",
           });
         }
+        for (const [i, ei] of (cfg.else_ifs ?? []).entries()) {
+          const handle = `else_if_${i + 1}`;
+          const next = ei?.next_node_key;
+          if (!next || !knownKeys.has(next)) continue;
+          edges.push({
+            id: `${node.node_key}--${handle}--${next}`,
+            source: node.node_key,
+            target: next,
+            sourceHandle: handle,
+            label: `${handle} (${conditionLabel(ei)})`,
+          });
+        }
+        const falseNext = cfg.false_next;
         if (falseNext && knownKeys.has(falseNext)) {
           edges.push({
             id: `${node.node_key}--false--${falseNext}`,
@@ -184,6 +208,9 @@ export function outgoingSlots(node: BuilderNode): OutgoingSlot[] {
     case "condition":
       return [
         { id: "true", label: "true" },
+        ...((node.config as { else_ifs?: unknown[] }).else_ifs ?? []).map(
+          (_, i) => ({ id: `else_if_${i + 1}`, label: `else if ${i + 1}` }),
+        ),
         { id: "false", label: "false" },
       ];
 
@@ -259,6 +286,20 @@ export function applyEdgeConnection(
     case "condition":
       if (sourceHandle === "true") return { true_next: targetKey };
       if (sourceHandle === "false") return { false_next: targetKey };
+      if (sourceHandle.startsWith("else_if_")) {
+        const idx = Number(sourceHandle.slice("else_if_".length)) - 1;
+        const elseIfs = Array.isArray(
+          (node.config as { else_ifs?: unknown[] }).else_ifs,
+        )
+          ? (node.config as { else_ifs: Record<string, unknown>[] }).else_ifs
+          : [];
+        if (!Number.isInteger(idx) || idx < 0 || idx >= elseIfs.length) return null;
+        return {
+          else_ifs: elseIfs.map((ei, i) =>
+            i === idx ? { ...ei, next_node_key: targetKey } : ei,
+          ),
+        };
+      }
       return null;
 
     case "send_buttons": {
@@ -353,14 +394,34 @@ function patchedConfigWithoutKey(
     }
 
     case "condition": {
-      const c = cfg as { true_next?: string; false_next?: string };
+      const c = cfg as {
+        true_next?: string;
+        false_next?: string;
+        else_ifs?: Array<{
+          next_node_key?: string;
+          subject?: string;
+          subject_key?: string;
+          operator?: string;
+          value?: string;
+        }>;
+      };
       const trueMatch = c.true_next === deletedKey;
       const falseMatch = c.false_next === deletedKey;
-      if (!trueMatch && !falseMatch) return null;
+      const elseIfs = Array.isArray(c.else_ifs) ? c.else_ifs : [];
+      let elseIfDirty = false;
+      const nextElseIfs = elseIfs.map((ei) => {
+        if (ei.next_node_key === deletedKey) {
+          elseIfDirty = true;
+          return { ...ei, next_node_key: "" };
+        }
+        return ei;
+      });
+      if (!trueMatch && !falseMatch && !elseIfDirty) return null;
       return {
         ...cfg,
         ...(trueMatch ? { true_next: "" } : {}),
         ...(falseMatch ? { false_next: "" } : {}),
+        ...(elseIfDirty ? { else_ifs: nextElseIfs } : {}),
       };
     }
 
@@ -408,5 +469,27 @@ function patchedConfigWithoutKey(
     case "end":
       return null;
   }
+}
+
+const OPERATOR_TEXT: Record<string, string> = {
+  equals: "=",
+  exact_match: "==",
+  contains: "contains",
+  present: "is present",
+  absent: "is absent",
+};
+
+/** Short human-readable summary of a condition predicate, e.g.
+ *  `name == "Ada"` — used as the canvas edge label for ELSE IF
+ *  branches. Falls back to the operator when the predicate is sparse. */
+function conditionLabel(p: {
+  subject_key?: string;
+  operator?: string;
+  value?: string;
+} | undefined): string {
+  const key = p?.subject_key ?? "?";
+  const op = p?.operator ? OPERATOR_TEXT[p.operator] ?? p.operator : "?";
+  const value = p?.value ?? "";
+  return value ? `"${key}" ${op} "${value}"` : `"${key}" ${op}`;
 }
 

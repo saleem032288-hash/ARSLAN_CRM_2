@@ -1,6 +1,6 @@
 "use client";
 
-import { List, Reply } from "lucide-react";
+import { List, Link as LinkIcon, Reply } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { InteractiveMessagePayload } from "@/lib/whatsapp/interactive";
 
@@ -71,7 +71,11 @@ export function InteractivePreview({
               disabled
               className="flex items-center justify-center gap-1.5 border-t border-border py-2 text-sm font-medium text-primary first:border-t-0"
             >
-              <Reply className="h-3.5 w-3.5" />
+              {b.type === "url" ? (
+                <LinkIcon className="h-3.5 w-3.5" />
+              ) : (
+                <Reply className="h-3.5 w-3.5" />
+              )}
               <span className="truncate">{b.title || buttonLabel}</span>
             </button>
           ))}

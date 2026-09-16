@@ -372,33 +372,20 @@ export function summarizeNode(
     case 'condition': {
       const subjectKey =
         typeof cfg.subject_key === 'string' ? cfg.subject_key : '';
-      if (!subjectKey) return null;
-      const subject =
-        cfg.subject === 'tag'
-          ? 'tag'
-          : cfg.subject === 'contact_field'
-            ? 'field'
-            : 'var';
-      const subjectStr =
-        subject === 'tag'
-          ? t ? t('hasTag', { tag: truncate(subjectKey, 24) }) : `has tag ${truncate(subjectKey, 24)}`
-          : `${subject}.${subjectKey}`;
-      const op =
-        cfg.operator === 'equals'
-          ? '=='
-          : cfg.operator === 'contains'
-            ? t ? t('opContains') : 'contains'
-            : cfg.operator === 'present'
-              ? t ? t('opExists') : 'exists'
-              : cfg.operator === 'absent'
-                ? t ? t('opMissing') : 'missing'
-                : '';
-      const value = typeof cfg.value === 'string' ? cfg.value : '';
-      const valStr =
-        (cfg.operator === 'equals' || cfg.operator === 'contains') && value
-          ? ` "${truncate(value, 20)}"`
-          : '';
-      return subject === 'tag' ? subjectStr : `${subjectStr} ${op}${valStr}`;
+      const elseIfs = Array.isArray(cfg.else_ifs)
+        ? (cfg.else_ifs as Array<Record<string, unknown>>)
+        : [];
+      if (!subjectKey && elseIfs.length === 0) return null;
+      let base: string | null = subjectKey
+        ? summarizeConditionPredicate(cfg, t)
+        : null;
+      if (elseIfs.length > 0) {
+        const suffix = t
+          ? t('elseIfCount', { count: elseIfs.length })
+          : `else if × ${elseIfs.length}`;
+        base = base ? `${base} · ${suffix}` : suffix;
+      }
+      return base;
     }
     case 'set_tag': {
       const mode = cfg.mode === 'remove' ? (t ? t('modeRemove') : 'Remove') : (t ? t('modeAdd') : 'Add');
@@ -415,4 +402,51 @@ export function summarizeNode(
       return note.length > 0 ? truncate(note) : null;
     }
   }
+}
+
+/** 1-line summary of a single condition predicate — the "IF" condition
+ *  and each "ELSE IF" entry. Used by summarizeNode / the form's header. */
+function summarizeConditionPredicate(
+  p: Record<string, unknown>,
+  t?: (key: string, values?: Record<string, string | number>) => string
+): string {
+  const subjectKey =
+    typeof p.subject_key === 'string' ? p.subject_key : '';
+  const subject =
+    p.subject === 'tag'
+      ? 'tag'
+      : p.subject === 'contact_field'
+        ? 'field'
+        : 'var';
+  const subjectStr =
+    subject === 'tag'
+      ? t
+        ? t('hasTag', { tag: truncate(subjectKey, 24) })
+        : `has tag ${truncate(subjectKey, 24)}`
+      : `${subject}.${subjectKey}`;
+  const op =
+    p.operator === 'equals' || p.operator === 'exact_match'
+      ? '=='
+      : p.operator === 'contains'
+        ? t
+          ? t('opContains')
+          : 'contains'
+        : p.operator === 'present'
+          ? t
+            ? t('opExists')
+            : 'exists'
+          : p.operator === 'absent'
+            ? t
+              ? t('opMissing')
+              : 'missing'
+            : '';
+  const value = typeof p.value === 'string' ? p.value : '';
+  const valStr =
+    (p.operator === 'equals' ||
+      p.operator === 'exact_match' ||
+      p.operator === 'contains') &&
+    value
+      ? ` "${truncate(value, 20)}"`
+      : '';
+  return subject === 'tag' ? subjectStr : `${subjectStr} ${op}${valStr}`;
 }

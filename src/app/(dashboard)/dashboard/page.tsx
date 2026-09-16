@@ -28,6 +28,7 @@ import type {
 
 import { MetricCard } from '@/components/dashboard/metric-card'
 import { SkeletonCard } from '@/components/dashboard/skeleton'
+import { EmptyState } from '@/components/dashboard/empty-state'
 import { QuickActions } from '@/components/dashboard/quick-actions'
 import { ConversationsChart } from '@/components/dashboard/conversations-chart'
 import { PipelineDonut } from '@/components/dashboard/pipeline-donut'
@@ -43,6 +44,7 @@ export default function DashboardPage() {
   const { defaultCurrency } = useAuth()
   const [metrics, setMetrics] = useState<MetricsBundle | null>(null)
   const [metricsLoading, setMetricsLoading] = useState(true)
+  const [metricsError, setMetricsError] = useState(false)
 
   const [range, setRange] = useState<RangeDays>(30)
   // Keep a cache per range so switching tabs doesn't re-fetch what we
@@ -54,15 +56,19 @@ export default function DashboardPage() {
     90: null,
   })
   const [seriesLoading, setSeriesLoading] = useState(true)
+  const [seriesError, setSeriesError] = useState(false)
 
   const [pipeline, setPipeline] = useState<PipelineDonutData | null>(null)
   const [pipelineLoading, setPipelineLoading] = useState(true)
+  const [pipelineError, setPipelineError] = useState(false)
 
   const [responseTime, setResponseTime] = useState<ResponseTimeSummary | null>(null)
   const [responseTimeLoading, setResponseTimeLoading] = useState(true)
+  const [responseTimeError, setResponseTimeError] = useState(false)
 
   const [activity, setActivity] = useState<ActivityItem[] | null>(null)
   const [activityLoading, setActivityLoading] = useState(true)
+  const [activityError, setActivityError] = useState(false)
 
   const loadAll = useCallback(() => {
     const db = createClient()
@@ -71,31 +77,61 @@ export default function DashboardPage() {
     // setState + finally so a slow query doesn't hold up faster
     // sections — each widget shows its own skeleton independently.
     void loadMetrics(db)
-      .then((m) => setMetrics(m))
-      .catch((err) => console.error('[dashboard] metrics failed:', err))
+      .then((m) => {
+        setMetrics(m)
+        setMetricsError(false)
+      })
+      .catch((err) => {
+        console.error('[dashboard] metrics failed:', err)
+        setMetricsError(true)
+      })
       .finally(() => setMetricsLoading(false))
 
     void loadConversationsSeries(db, 30)
-      .then((s) => setSeries((prev) => ({ ...prev, 30: s })))
-      .catch((err) => console.error('[dashboard] series failed:', err))
+      .then((s) => {
+        setSeries((prev) => ({ ...prev, 30: s }))
+        setSeriesError(false)
+      })
+      .catch((err) => {
+        console.error('[dashboard] series failed:', err)
+        setSeriesError(true)
+      })
       .finally(() => setSeriesLoading(false))
 
     void loadPipelineDonut(db)
-      .then((p) => setPipeline(p))
-      .catch((err) => console.error('[dashboard] pipeline failed:', err))
+      .then((p) => {
+        setPipeline(p)
+        setPipelineError(false)
+      })
+      .catch((err) => {
+        console.error('[dashboard] pipeline failed:', err)
+        setPipelineError(true)
+      })
       .finally(() => setPipelineLoading(false))
 
     void loadResponseTime(db)
-      .then((r) => setResponseTime(r))
-      .catch((err) => console.error('[dashboard] response time failed:', err))
+      .then((r) => {
+        setResponseTime(r)
+        setResponseTimeError(false)
+      })
+      .catch((err) => {
+        console.error('[dashboard] response time failed:', err)
+        setResponseTimeError(true)
+      })
       .finally(() => setResponseTimeLoading(false))
 
     // Fetch up to 50 so the biggest page-size option in the feed
     // (50 rows) is already in memory — switching sizes then becomes
     // a pure client-side slice with no extra round trip.
     void loadActivity(db, 50)
-      .then((a) => setActivity(a))
-      .catch((err) => console.error('[dashboard] activity failed:', err))
+      .then((a) => {
+        setActivity(a)
+        setActivityError(false)
+      })
+      .catch((err) => {
+        console.error('[dashboard] activity failed:', err)
+        setActivityError(true)
+      })
       .finally(() => setActivityLoading(false))
   }, [])
 
@@ -114,8 +150,14 @@ export default function DashboardPage() {
       setSeriesLoading(true)
       const db = createClient()
       loadConversationsSeries(db, r)
-        .then((s) => setSeries((prev) => ({ ...prev, [r]: s })))
-        .catch((err) => console.error('[dashboard] series failed:', err))
+        .then((s) => {
+          setSeries((prev) => ({ ...prev, [r]: s }))
+          setSeriesError(false)
+        })
+        .catch((err) => {
+          console.error('[dashboard] series failed:', err)
+          setSeriesError(true)
+        })
         .finally(() => setSeriesLoading(false))
     },
     [series],
@@ -133,8 +175,12 @@ export default function DashboardPage() {
 
       {/* Metric cards */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {metricsLoading || !metrics ? (
+        {metricsLoading ? (
           Array.from({ length: 4 }).map((_, i) => <SkeletonCard key={i} />)
+        ) : metricsError || !metrics ? (
+          <div className="col-span-full">
+            <EmptyState title={t('loadError')} />
+          </div>
         ) : (
           <>
             <MetricCard
@@ -203,6 +249,7 @@ export default function DashboardPage() {
           <ConversationsChart
             series={series}
             loading={seriesLoading}
+            error={seriesError}
             range={range}
             onRangeChange={handleRangeChange}
           />
@@ -211,16 +258,21 @@ export default function DashboardPage() {
           <PipelineDonut
             data={pipeline}
             loading={pipelineLoading}
+            error={pipelineError}
             currency={defaultCurrency}
           />
         </div>
       </div>
 
       {/* Response time */}
-      <ResponseTimeChart data={responseTime} loading={responseTimeLoading} />
+      <ResponseTimeChart
+        data={responseTime}
+        loading={responseTimeLoading}
+        error={responseTimeError}
+      />
 
       {/* Activity feed */}
-      <ActivityFeed items={activity} loading={activityLoading} />
+      <ActivityFeed items={activity} loading={activityLoading} error={activityError} />
     </div>
   )
 }

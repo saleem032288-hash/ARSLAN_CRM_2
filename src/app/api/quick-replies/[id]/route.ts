@@ -3,6 +3,13 @@ import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { supabaseAdmin } from '@/lib/automations/admin-client'
 import { validateInteractivePayload } from '@/lib/whatsapp/interactive'
 
+const MEDIA_KINDS = ['image', 'video', 'document', 'audio'] as const
+type MediaKind = (typeof MEDIA_KINDS)[number]
+
+function isMediaKind(value: unknown): value is MediaKind {
+  return typeof value === 'string' && (MEDIA_KINDS as readonly string[]).includes(value)
+}
+
 // Update / delete a single quick reply. Quick replies are account-
 // shared, so every mutation is scoped by `account_id` (the service-role
 // client bypasses the agent-gated RLS, so both the role check and the
@@ -30,12 +37,16 @@ export async function PATCH(
     update.title = title
   }
 
-  // When `kind` is supplied (e.g. the editor flips Text ↔ Interactive), it
-  // drives which content column is authoritative and the other is cleared —
-  // otherwise a switched row keeps a stale payload the picker mis-routes on.
+  // When `kind` is supplied (e.g. the editor flips Text ⟷ Interactive ⟷
+  // Media), it drives which content columns are authoritative and the
+  // others are cleared — otherwise a switched row keeps a stale payload
+  // the picker mis-routes on.
   if ('kind' in body) {
-    if (body.kind !== 'text' && body.kind !== 'interactive') {
-      return NextResponse.json({ error: 'kind must be "text" or "interactive"' }, { status: 400 })
+    if (body.kind !== 'text' && body.kind !== 'interactive' && body.kind !== 'media') {
+      return NextResponse.json(
+        { error: 'kind must be "text", "interactive", or "media"' },
+        { status: 400 },
+      )
     }
     update.kind = body.kind
     if (body.kind === 'interactive') {
@@ -43,6 +54,26 @@ export async function PATCH(
       if (!result.ok) return NextResponse.json({ error: result.error }, { status: 400 })
       update.interactive_payload = body.interactive_payload
       update.content_text = null
+      update.media_type = null
+      update.media_url = null
+    } else if (body.kind === 'media') {
+      if (!isMediaKind(body.media_type)) {
+        return NextResponse.json(
+          { error: 'media_type is required (image, video, document, or audio)' },
+          { status: 400 },
+        )
+      }
+      const mediaUrl = typeof body.media_url === 'string' ? body.media_url.trim() : ''
+      if (!mediaUrl) {
+        return NextResponse.json(
+          { error: 'media_url is required for media quick replies' },
+          { status: 400 },
+        )
+      }
+      update.media_type = body.media_type
+      update.media_url = mediaUrl
+      update.content_text = typeof body.content_text === 'string' ? body.content_text : null
+      update.interactive_payload = null
     } else {
       const text = typeof body.content_text === 'string' ? body.content_text : ''
       if (!text.trim()) {
@@ -53,6 +84,8 @@ export async function PATCH(
       }
       update.content_text = text
       update.interactive_payload = null
+      update.media_type = null
+      update.media_url = null
     }
   } else {
     // No kind change — allow partial edits of whichever field the row uses.
@@ -65,6 +98,25 @@ export async function PATCH(
         }
       }
       update.interactive_payload = body.interactive_payload ?? null
+    }
+    if ('media_type' in body) {
+      if (!isMediaKind(body.media_type)) {
+        return NextResponse.json(
+          { error: 'media_type is required (image, video, document, or audio)' },
+          { status: 400 },
+        )
+      }
+      update.media_type = body.media_type
+    }
+    if ('media_url' in body) {
+      const mediaUrl = typeof body.media_url === 'string' ? body.media_url.trim() : ''
+      if (!mediaUrl) {
+        return NextResponse.json(
+          { error: 'media_url is required for media quick replies' },
+          { status: 400 },
+        )
+      }
+      update.media_url = mediaUrl
     }
   }
 

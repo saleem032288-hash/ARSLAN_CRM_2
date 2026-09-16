@@ -79,7 +79,8 @@
       "newTodayVsYesterday": "nuevos hoy vs. ayer",
       "vsYesterday": "vs. ayer",
       "openDeals": "{count} {count, plural, =1 {negocio abierto} other {negocios abiertos}}",
-      "noChange": "Sin cambios {suffix}"
+      "noChange": "Sin cambios {suffix}",
+      "loadError": "No se pudieron cargar estos datos. Actualiza para intentarlo de nuevo."
     },
     "quickActions": {
       "newContact": "Nuevo contacto",
@@ -472,7 +473,11 @@
       "resultTags": "{count} etiqueta asignada",
       "resultTags_plural": "{count} etiquetas asignadas",
       "resultSkipped": "{count} omitidos",
+      "resultInvalidPhone": "{count} teléfono no válido",
+      "resultInvalidPhone_plural": "{count} teléfonos no válidos",
       "resultFailed": "{count} con error",
+      "failedRowsHeading": "Filas con error",
+      "unknownReason": "Error desconocido",
       "willBeCreated": "{name} (se creará al importar)",
       "columns": {
         "phone": "Teléfono",
@@ -494,6 +499,8 @@
       "toastTagsSkipped": "Etiquetas desconocidas omitidas (créalas primero en Configuración): {sample}{more}",
       "toastSkipped": "{count} duplicado omitido",
       "toastSkipped_plural": "{count} duplicados omitidos",
+      "toastInvalidPhone": "{count} contacto no tenía un teléfono válido",
+      "toastInvalidPhone_plural": "{count} contactos no tenían un teléfono válido",
       "toastFailed": "{count} contacto no se pudo importar",
       "toastFailed_plural": "{count} contactos no se pudieron importar",
       "toastError": "Error en la importación"
@@ -708,7 +715,8 @@
       "retryFailed": "Reintentar fallidos ({count})",
       "toastResumeStarted": "Enviando a {count} destinatarios en segundo plano.",
       "toastResumeStartedCapped": "Enviando a {count} destinatarios en segundo plano. Otros {remaining} necesitarán otra ejecución.",
-      "toastResumeFailed": "No se pudo reanudar: {error}"
+      "toastResumeFailed": "No se pudo reanudar: {error}",
+      "modeSuperSafe": "Super seguro"
     },
     "new": {
       "title": "Nueva difusión",
@@ -734,7 +742,8 @@
         "subtitle": "Selecciona una plantilla de mensaje aprobada para tu difusión.",
         "noTemplates": "No hay plantillas disponibles.",
         "createFirst": "Primero crea una plantilla en Configuración.",
-        "errorLoad": "Error al cargar las plantillas"
+        "errorLoad": "Error al cargar las plantillas",
+        "headerVarUnsupported": "El encabezado de esta plantilla usa una variable que las difusiones aún no pueden completar. Elige otra plantilla."
       },
       "selectAudience": {
         "title": "Seleccionar audiencia",
@@ -829,8 +838,18 @@
         "toastFailedPreview": "Error al cargar los datos de la vista previa",
         "estimatedReach": "Alcance estimado",
         "language": "Idioma",
+        "sendingMode": "Modo de envío",
+        "modeInstant": "Instantáneo",
+        "modeInstantDesc": "Envía tan rápido como lo permiten los límites de Meta. Más rápido, pero mayor riesgo de que marquen el número.",
+        "modeSuperSafe": "Super seguro",
+        "modeSuperSafeDesc": "Unos 8 mensajes por minuto para reducir la probabilidad de que WhatsApp marque el número. Más lento, pero lo más seguro.",
+        "estTime": "Tiempo estimado: unos {minutes} {minutes, plural, =1 {minuto} other {minutos}}",
+        "modeRow": "Modo de envío:",
+        "superSafeEstimate": "El modo Super seguro envía unos 8 mensajes por minuto, así que tardará aproximadamente {minutes} {minutes, plural, =1 {minuto} other {minutos}}.",
         "confirmTitle": "Confirmar difusión",
-        "confirmDesc": "Estás a punto de enviar esta difusión a <b>{count, number}</b> {count, plural, =1 {contacto} other {contactos}} con la plantilla <b>{template}</b>. Esta acción no se puede deshacer."
+        "confirmDesc": "Estás a punto de enviar esta difusión a <b>{count, number}</b> {count, plural, =1 {contacto} other {contactos}} con la plantilla <b>{template}</b>. Esta acción no se puede deshacer.",
+        "confirmSuperSafe": "Con el modo Super seguro tardará unos {minutes} {minutes, plural, =1 {minuto} other {minutos}}.",
+        "confirmInstant": "Se enviará tan rápido como WhatsApp lo permita."
       }
     }
   },
@@ -1005,6 +1024,7 @@
       },
       "branches": {
         "yes": "Sí",
+        "elseIf": "SI NO",
         "no": "No"
       },
       "addStep": "Agregar paso",
@@ -1014,9 +1034,10 @@
       "kindWait": "Espera",
       "kindAction": "Acción",
       "delete": "Eliminar",
-      "config": {
+"config": {
         "messageText": "Texto del mensaje",
         "placeholderMessageText": "¡Hola! Gracias por escribirnos…",
+        "mediaAttachment": "Adjunto (opcional)",
         "tagLabel": "Etiqueta",
         "modeLabel": "Modo",
         "modes": {
@@ -1026,11 +1047,21 @@
         "agentLabel": "Agente",
         "fieldLabel": "Campo",
         "valueLabel": "Valor",
+        "operatorLabel": "Operador",
+        "operators": {
+          "contains": "Contiene",
+          "exact_match": "Coincidencia exacta"
+        },
+        "ifLabel": "SI",
+        "elseIfLabel": "SI NO",
+        "addElseIf": "Añadir rama si-no",
+        "removeElseIf": "Quitar",
         "placeholderValue": "Texto o {{ vars.x }} / {{ message.text }}",
         "titleLabel": "Título",
         "amountLabel": "Cantidad",
         "unitLabel": "Unidad",
         "units": {
+          "seconds": "Segundos",
           "minutes": "Minutos",
           "hours": "Horas",
           "days": "Días"
@@ -1148,6 +1179,13 @@
       "form": {
         "advancesTo": "Avanza a",
         "textToCustomer": "Texto enviado al cliente",
+        "attachVideo": "Adjuntar un video (opcional)",
+        "videoAttachmentHint": "Se envía como mensaje de video de WhatsApp; el texto de arriba se usa como leyenda.",
+        "buttonType": "Tipo",
+        "buttonTypeReply": "Respuesta rápida",
+        "buttonTypeUrl": "URL",
+        "urlPlaceholder": "https://example.com",
+        "urlButtonHint": "Abre este enlace al tocar. Un mensaje CTA-URL permite exactamente un botón URL y nunca avanza el run.",
         "promptToCustomer": "Pregunta enviada al cliente",
         "varKeyLabel": "Clave de la variable (guardada en flow_runs.vars; alfanumérica + guion bajo)",
         "varKeyPlaceholder": "p. ej. name, email, company",
@@ -1185,6 +1223,11 @@
         "ifTrueAdvance": "Si es verdadero → avanzar a",
         "ifFalseAdvance": "Si es falso → avanzar a",
         "actionLabel": "Acción",
+        "addElseIf": "Añadir rama SI NO",
+        "elseIfLabel": "SI NO",
+        "elseIfHelp": "Ramas SI NO (opcional): se evalúan de arriba abajo; la primera que coincida enruta a su nodo; si ninguna coincide, el flujo sigue la ruta falsa.",
+        "conditionLabel": "Condición",
+        "exactMatch": "coincide exactamente",
         "addTag": "Agregar etiqueta",
         "removeTag": "Quitar etiqueta",
         "tagUuidPlaceholder": "UUID de la etiqueta",
@@ -1283,6 +1326,7 @@
       "opContains": "contiene",
       "opExists": "existe",
       "opMissing": "falta",
+      "elseIfCount": "si no × {count}",
       "modeAdd": "Agregar",
       "modeRemove": "Quitar",
       "tagPicked": "{mode} etiqueta {tag}…",
@@ -1611,6 +1655,7 @@
       "wabaIdPlaceholder": "p. ej. 100234567890456",
       "saving": "Guardando...",
       "saveConfig": "Guardar configuración",
+      "adminOnlyConfig": "Solo los administradores y propietarios pueden cambiar la conexión de WhatsApp.",
       "testing": "Probando...",
       "testConnection": "Probar conexión con la API",
       "setupInstructions": "Instrucciones de configuración",
@@ -1644,6 +1689,15 @@
       "metaErrorDetailsHint": "Cita estos detalles al contactar al soporte de Meta.",
       "phoneNumberIdNotNumeric": "El Phone Number ID debe contener solo dígitos. Copia el id numérico desde Meta → WhatsApp → Configuración de la API, no el número de teléfono en sí.",
       "wabaIdNotNumeric": "El ID de la cuenta de WhatsApp Business debe contener solo dígitos. Cópialo desde Meta → WhatsApp → Configuración de la API.",
+      "metaAppId": "ID de la app de Meta",
+      "metaAppIdPlaceholder": "p. ej. 123456789123456",
+      "metaAppIdHint": "ID numérico de la app de Meta propietaria de este número. Cópialo desde Meta for Developers → Ajustes de la app → Básico. Se usa para plantillas con encabezado de medios y la comprobación de suscripción del WABA.",
+      "metaAppSecret": "Secreto de la app de Meta",
+      "metaAppSecretPlaceholder": "Ingresa el secreto de la app de Meta",
+      "metaAppSecretHint": "El secreto que Meta usa para firmar las entregas de webhook. Se almacena cifrado por conexión y se usa para verificar firmas entrantes — sin necesidad de variable de entorno.",
+      "appSecretHidden": "El secreto de la app está oculto por seguridad. Introdúcelo de nuevo para cambiarlo.",
+      "appIdNotNumeric": "El ID de la app de Meta debe contener solo dígitos. Cópialo desde Meta → Ajustes de la app → Básico.",
+      "appSecretRequired": "El secreto de la app de Meta es obligatorio para crear una nueva conexión",
       "wabaSubscribed": "La cuenta de WhatsApp Business está suscrita a esta app: los webhooks entrantes pueden entregarse.",
       "wabaNotSubscribed": "La cuenta de WhatsApp Business no está suscrita a esta app, así que Meta no entregará webhooks entrantes. Vuelve a ingresar el token de acceso y guarda de nuevo para suscribirla."
     },
@@ -2012,7 +2066,23 @@
     "rowTitlePlaceholder": "Título de la fila",
     "rowDescriptionPlaceholder": "Descripción (opcional)",
     "addRow": "Agregar fila",
-    "addSection": "Agregar sección"
+    "addSection": "Agregar sección",
+    "buttonType": "Tipo",
+    "buttonTypeReply": "Respuesta rápida",
+    "buttonTypeUrl": "URL",
+    "urlPlaceholder": "https://example.com"
+  },
+"MediaUpload": {
+    "uploading": "Subiendo…",
+    "tooLarge": "El archivo supera el límite de {limit} MB.",
+    "remove": "Quitar archivo"
+  },
+  "MediaSend": {
+    "image": "Imagen",
+    "video": "Video",
+    "attachImage": "Adjuntar una imagen (opcional)",
+    "attachVideo": "Adjuntar un video (opcional)",
+    "hint": "Se envía como imagen o video de WhatsApp; el texto del mensaje se usa como subtítulo."
   },
   "DashboardShell": {
     "loading": "Cargando..."

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Loader2, MessageSquare, Zap } from "lucide-react";
+import { Loader2, MessageSquare, Video, Zap } from "lucide-react";
 import { useTranslations } from "next-intl";
 
 import {
@@ -79,6 +79,8 @@ export function QuickReplyPicker({
                   >
                     {qr.kind === "interactive" ? (
                       <Zap className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                    ) : qr.kind === "media" ? (
+                      <Video className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
                     ) : (
                       <MessageSquare className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
                     )}
@@ -89,7 +91,9 @@ export function QuickReplyPicker({
                       <span className="block truncate text-xs text-muted-foreground">
                         {qr.kind === "interactive" && qr.interactive_payload
                           ? interactivePayloadPreviewText(qr.interactive_payload)
-                          : qr.content_text}
+                          : qr.kind === "media"
+                            ? (qr.content_text || `[${qr.media_type ?? "media"}]`)
+                            : qr.content_text}
                       </span>
                     </span>
                   </button>

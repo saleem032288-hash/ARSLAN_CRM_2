@@ -6,10 +6,18 @@ const h = vi.hoisted(() => ({
   state: {
     owned: null as { id: string } | null,
     ownedCustomField: null as { id: string } | null,
+    /** Row the contact_field condition reads for the operand column. */
+    contactField: null as Record<string, unknown> | null,
+    /** Count returned for a tag_presence condition lookup. */
+    tagCount: 0,
     automations: [] as Record<string, unknown>[],
     steps: [] as Record<string, unknown>[],
     fromCalls: [] as string[],
-    updateCalls: [] as { table: string; filters: [string, string, unknown][] }[],
+    updateCalls: [] as {
+      table: string;
+      filters: [string, string, unknown][];
+      payload?: unknown;
+    }[],
     upsertCalls: [] as { table: string; payload: unknown }[],
     logInserts: [] as Record<string, unknown>[],
     logUpdates: [] as Record<string, unknown>[],
@@ -28,11 +36,11 @@ vi.mock("./admin-client", () => {
     const { table, type } = ops;
     if (table === "contacts") {
       if (type === "update") {
-        state.updateCalls.push({ table, filters: ops.filters });
+        state.updateCalls.push({ table, filters: ops.filters, payload: ops.payload });
         return { data: null, error: null };
       }
       // ownership guard / condition read
-      return { data: state.owned, error: null };
+      return { data: state.contactField ?? state.owned, error: null };
     }
     if (table === "custom_fields") {
       // account-scoped ownership lookup for a custom field definition
@@ -57,7 +65,28 @@ vi.mock("./admin-client", () => {
       }
       return { data: { steps_executed: [], status: "success" }, error: null };
     }
-    if (table === "automation_steps") return { data: state.steps, error: null };
+    if (table === "automation_steps") {
+      // Scoped reads: top-level scope uses .is('parent_step_id', null);
+      // branch recursion uses .eq('parent_step_id', X).eq('branch', Y).
+      const parentIsNull = ops.filters.some(
+        ([method, key]) => method === "is" && key === "parent_step_id",
+      );
+      const parentEq = ops.filters.find(
+        ([method, key]) => method === "eq" && key === "parent_step_id",
+      );
+      const branchEq = ops.filters.find(
+        ([method, key]) => method === "eq" && key === "branch",
+      );
+      let rows = state.steps;
+      if (parentIsNull) rows = rows.filter((s) => s.parent_step_id == null);
+      if (parentEq) rows = rows.filter((s) => s.parent_step_id === parentEq[2]);
+      if (branchEq) rows = rows.filter((s) => s.branch === branchEq[2]);
+      return { data: rows, error: null };
+    }
+    if (table === "contact_tags") {
+      // .select('id', { count: 'exact', head: true }) resolves via .then()
+      return { data: null, error: null, count: state.tagCount };
+    }
     return { data: null, error: null };
   }
 
@@ -76,7 +105,7 @@ vi.mock("./admin-client", () => {
       upsert: (p: unknown) => ((ops.type = "upsert"), (ops.payload = p), b),
       eq: (k: string, v: unknown) => (ops.filters.push(["eq", k, v]), b),
       gte: () => b,
-      is: () => b,
+      is: (k: string, v: unknown) => (ops.filters.push(["is", k, v]), b),
       order: () => b,
       limit: () => b,
       single: () => Promise.resolve(resolve(ops)),
@@ -105,13 +134,15 @@ vi.mock("./meta-send", () => ({
 }));
 
 import { runAutomationsForTrigger, triggerMatches } from "./engine";
-import type { Automation, KeywordMatchTriggerConfig } from "@/types";
+import type { Automation, AutomationLogStepResult, KeywordMatchTriggerConfig } from "@/types";
 
 const ACCOUNT = "acct-1";
 
 beforeEach(() => {
   h.state.owned = null;
   h.state.ownedCustomField = null;
+  h.state.contactField = null;
+  h.state.tagCount = 0;
   h.state.automations = [];
   h.state.steps = [];
   h.state.fromCalls = [];
@@ -550,3 +581,321 @@ describe("triggerMatches — keyword_match", () => {
     expect(on(automation({ keywords: ["hi"], match_type: "word" }), "")).toBe(false);
   });
 });
+
+describe("condition steps — IF / ELSE IF / OTHER branch resolution", () => {
+  const COND_ID = "cond-1";
+
+  function branchStep(stepId: string, branch: string, value: string) {
+    return {
+      id: stepId,
+      automation_id: "a1",
+      step_type: "update_contact_field",
+      position: 0,
+      parent_step_id: COND_ID,
+      branch,
+      step_config: { field: "company", value },
+    };
+  }
+
+  function run(messageText: string) {
+    return runAutomationsForTrigger({
+      accountId: ACCOUNT,
+      triggerType: "new_message_received",
+      contactId: "c1",
+      context: { message_text: messageText },
+    });
+  }
+
+  function companyWrites(): string[] {
+    return h.state.updateCalls
+      .filter((c) => c.table === "contacts")
+      .map((c) => (c.payload as { company: string }).company);
+  }
+
+  it("takes the IF branch when the primary predicate matches", async () => {
+    h.state.owned = { id: "c1" };
+    h.state.automations = [automationWithUpdateStep()];
+    h.state.steps = [
+      {
+        id: COND_ID,
+        automation_id: "a1",
+        step_type: "condition",
+        position: 0,
+        parent_step_id: null,
+        step_config: {
+          subject: "message_content",
+          value: "hello",
+          operator: "contains",
+          else_ifs: [
+            {
+              subject: "message_content",
+              value: "urgent",
+              operator: "contains",
+            },
+          ],
+        },
+      },
+      branchStep("b-yes", "yes", "IF_RAN"),
+      branchStep("b-else1", "else_if_1", "ELSE_IF_1_RAN"),
+      branchStep("b-no", "no", "OTHER_RAN"),
+    ];
+
+    await run("HELLO world");
+
+    expect(companyWrites()).toEqual(["IF_RAN"]);
+  });
+
+  it("falls to the matching ELSE IF when the primary predicate misses", async () => {
+    h.state.owned = { id: "c1" };
+    h.state.automations = [automationWithUpdateStep()];
+    h.state.steps = [
+      {
+        id: COND_ID,
+        automation_id: "a1",
+        step_type: "condition",
+        position: 0,
+        parent_step_id: null,
+        step_config: {
+          subject: "message_content",
+          value: "hello",
+          operator: "contains",
+          else_ifs: [
+            {
+              subject: "message_content",
+              value: "urgent",
+              operator: "contains",
+            },
+          ],
+        },
+      },
+      branchStep("b-yes", "yes", "IF_RAN"),
+      branchStep("b-else1", "else_if_1", "ELSE_IF_1_RAN"),
+      branchStep("b-no", "no", "OTHER_RAN"),
+    ];
+
+    await run("this is URGENT");
+
+    expect(companyWrites()).toEqual(["ELSE_IF_1_RAN"]);
+  });
+
+  it("takes the OTHER (no) branch when nothing matches", async () => {
+    h.state.owned = { id: "c1" };
+    h.state.automations = [automationWithUpdateStep()];
+    h.state.steps = [
+      {
+        id: COND_ID,
+        automation_id: "a1",
+        step_type: "condition",
+        position: 0,
+        parent_step_id: null,
+        step_config: {
+          subject: "message_content",
+          value: "hello",
+          operator: "contains",
+          else_ifs: [
+            {
+              subject: "message_content",
+              value: "urgent",
+              operator: "contains",
+            },
+          ],
+        },
+      },
+      branchStep("b-yes", "yes", "IF_RAN"),
+      branchStep("b-else1", "else_if_1", "ELSE_IF_1_RAN"),
+      branchStep("b-no", "no", "OTHER_RAN"),
+    ];
+
+    await run("completely unrelated");
+
+    expect(companyWrites()).toEqual(["OTHER_RAN"]);
+  });
+
+  it("first match wins — a matching ELSE IF is skipped when IF already matched", async () => {
+    h.state.owned = { id: "c1" };
+    h.state.automations = [automationWithUpdateStep()];
+    h.state.steps = [
+      {
+        id: COND_ID,
+        automation_id: "a1",
+        step_type: "condition",
+        position: 0,
+        parent_step_id: null,
+        step_config: {
+          subject: "message_content",
+          value: "hello",
+          operator: "contains",
+          else_ifs: [
+            {
+              subject: "message_content",
+              value: "hello",
+              operator: "contains",
+            },
+          ],
+        },
+      },
+      branchStep("b-yes", "yes", "IF_RAN"),
+      branchStep("b-else1", "else_if_1", "ELSE_IF_1_RAN"),
+      branchStep("b-no", "no", "OTHER_RAN"),
+    ];
+
+    await run("hello hello");
+
+    expect(companyWrites()).toEqual(["IF_RAN"]);
+  });
+
+  it("uses the nth branch label for the Nth matching ELSE IF", async () => {
+    h.state.owned = { id: "c1" };
+    h.state.automations = [automationWithUpdateStep()];
+    h.state.steps = [
+      {
+        id: COND_ID,
+        automation_id: "a1",
+        step_type: "condition",
+        position: 0,
+        parent_step_id: null,
+        step_config: {
+          subject: "message_content",
+          value: "alpha",
+          operator: "contains",
+          else_ifs: [
+            {
+              subject: "message_content",
+              value: "beta",
+              operator: "contains",
+            },
+            {
+              subject: "message_content",
+              value: "gamma",
+              operator: "contains",
+            },
+          ],
+        },
+      },
+      branchStep("b-yes", "yes", "IF_RAN"),
+      branchStep("b-else1", "else_if_1", "ELSE_IF_1_RAN"),
+      branchStep("b-else2", "else_if_2", "ELSE_IF_2_RAN"),
+      branchStep("b-no", "no", "OTHER_RAN"),
+    ];
+
+    await run("only GAMMA here");
+
+    expect(companyWrites()).toEqual(["ELSE_IF_2_RAN"]);
+  });
+});
+
+describe("message_content conditions — match operators", () => {
+  it("`contains` matches on a case-insensitive substring", async () => {
+    h.state.owned = { id: "c1" };
+    h.state.automations = [automationWithUpdateStep()];
+    h.state.steps = [{
+      id: "cond-1",
+      automation_id: "a1",
+      step_type: "condition",
+      position: 0,
+      parent_step_id: null,
+      step_config: { subject: "message_content", value: "order", operator: "contains" },
+    }];
+
+    await runAutomationsForTrigger({
+      accountId: ACCOUNT,
+      triggerType: "new_message_received",
+      contactId: "c1",
+      context: { message_text: "Where is my ORDER?" },
+    });
+
+    const last = h.state.logUpdates.at(-1) as { steps_executed: AutomationLogStepResult[] };
+    expect(last.steps_executed).toContainEqual(
+      expect.objectContaining({
+        step_type: "condition",
+        status: "success",
+        detail: "branch=yes",
+      }),
+    );
+  });
+
+  it("`exact_match` matches the whole message case-insensitively", async () => {
+    h.state.owned = { id: "c1" };
+    h.state.automations = [automationWithUpdateStep()];
+    h.state.steps = [{
+      id: "cond-1",
+      automation_id: "a1",
+      step_type: "condition",
+      position: 0,
+      parent_step_id: null,
+      step_config: {
+        subject: "message_content",
+        value: "order status",
+        operator: "exact_match",
+        else_ifs: [
+          {
+            subject: "message_content",
+            value: "lost",
+            operator: "exact_match",
+          },
+        ],
+      },
+    }];
+
+    await runAutomationsForTrigger({
+      accountId: ACCOUNT,
+      triggerType: "new_message_received",
+      contactId: "c1",
+      context: { message_text: "ORDER STATUS" },
+    });
+
+    const last = h.state.logUpdates.at(-1) as { steps_executed: AutomationLogStepResult[] };
+    expect(last.steps_executed).toContainEqual(
+      expect.objectContaining({
+        step_type: "condition",
+        status: "success",
+        detail: "branch=yes",
+      }),
+    );
+  });
+
+  it("`exact_match` rejects a substring when the whole message differs", async () => {
+    h.state.owned = { id: "c1" };
+    h.state.automations = [automationWithUpdateStep()];
+    h.state.steps = [
+      {
+        id: "cond-1",
+        automation_id: "a1",
+        step_type: "condition",
+        position: 0,
+        parent_step_id: null,
+        step_config: {
+          subject: "message_content",
+          value: "order status",
+          operator: "exact_match",
+        },
+      },
+      branchStepForOperatorTest("b-no", "no"),
+    ];
+
+    await runAutomationsForTrigger({
+      accountId: ACCOUNT,
+      triggerType: "new_message_received",
+      contactId: "c1",
+      context: { message_text: "order status please" },
+    });
+
+    // The OTHER branch must have run, not the exact-match IF branch.
+    const company = h.state.updateCalls
+      .filter((c) => c.table === "contacts")
+      .map((c) => (c.payload as { company: string }).company);
+    expect(company).toEqual(["OTHER_RAN"]);
+  });
+});
+
+function branchStepForOperatorTest(stepId: string, branch: string) {
+  return {
+    id: stepId,
+    automation_id: "a1",
+    step_type: "update_contact_field",
+    position: 0,
+    parent_step_id: "cond-1",
+    branch,
+    step_config: { field: "company", value: "OTHER_RAN" },
+  };
+}

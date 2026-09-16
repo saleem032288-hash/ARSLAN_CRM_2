@@ -49,6 +49,7 @@ import { cn } from "@/lib/utils";
 import { uploadAccountMedia, MEDIA_MAX_BYTES } from "@/lib/storage/upload-media";
 import { slugify, type BuilderNode } from "../shared";
 import { NextNodeRow, NodeKeySelect, TextRow } from "./fields";
+import { MediaSendField } from "@/components/shared/media-upload-field";
 
 interface NodeConfigFormProps {
   node: BuilderNode;
@@ -85,6 +86,21 @@ export function NodeConfigForm({
             value={(cfg as { text?: string }).text ?? ""}
             onChange={(v) => onUpdateConfig({ text: v })}
             rows={3}
+          />
+          <MediaSendField
+            file={
+              (cfg as { media?: { type?: string; url?: string; filename?: string } }).media?.url
+                ? ((cfg as { media?: { type?: string; url?: string; filename?: string } }).media as {
+                    type?: string;
+                    url: string;
+                    filename?: string;
+                  })
+                : null
+            }
+            onDone={(kind, url, filename) =>
+              onUpdateConfig({ media: { type: kind, url, filename } })
+            }
+            onClear={() => onUpdateConfig({ media: undefined })}
           />
           <NextNodeRow
             value={(cfg as { next_node_key?: string }).next_node_key ?? ""}
@@ -222,7 +238,13 @@ export function NodeConfigForm({
 interface SendButtonsCfg {
   text?: string;
   footer_text?: string;
-  buttons?: Array<{ reply_id: string; title: string; next_node_key: string }>;
+  buttons?: Array<{
+    reply_id: string;
+    title: string;
+    type?: "reply" | "url";
+    url?: string;
+    next_node_key: string;
+  }>;
 }
 
 function SendButtonsForm({
@@ -286,47 +308,73 @@ function SendButtonsForm({
           {buttons.map((b, i) => (
             <div
               key={i}
-              className={cn(
-                "grid grid-cols-1 gap-2 rounded-md border border-border bg-muted/40 p-3",
-                showAdvanced
-                  ? "md:grid-cols-[1fr_2fr_2fr_auto]"
-                  : "md:grid-cols-[2fr_2fr_auto]",
-              )}
+              className="rounded-md border border-border bg-muted/40 p-3"
             >
-              {showAdvanced && (
-                <Input
-                  value={b.reply_id}
+              <div className="flex items-center gap-2">
+                <select
+                  value={b.type ?? "reply"}
                   onChange={(e) =>
                     updateButton(i, {
-                      reply_id: slugify(e.target.value, `btn_${i + 1}`),
+                      type: e.target.value === "url" ? "url" : "reply",
                     })
                   }
-                  placeholder="reply_id"
-                  className="bg-muted font-mono text-xs"
+                  className="h-9 w-28 shrink-0 rounded-md border border-border bg-muted px-1.5 text-xs text-foreground"
+                  aria-label={t("buttonType")}
+                >
+                  <option value="reply">{t("buttonTypeReply")}</option>
+                  <option value="url">{t("buttonTypeUrl")}</option>
+                </select>
+                <Input
+                  value={b.title}
+                  onChange={(e) => updateButton(i, { title: e.target.value })}
+                  placeholder={t("optionTitlePlaceholder")}
+                  className="flex-1 bg-muted"
+                  maxLength={20}
                 />
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => removeButton(i)}
+                  className="text-red-400 hover:bg-red-500/10 hover:text-red-300"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+              {b.type === "url" ? (
+                <>
+                  <Input
+                    value={b.url ?? ""}
+                    onChange={(e) => updateButton(i, { url: e.target.value })}
+                    placeholder={t("urlPlaceholder")}
+                    className="mt-2 bg-muted"
+                  />
+                  <p className="mt-1 text-[10px] text-muted-foreground">
+                    {t("urlButtonHint")}
+                  </p>
+                </>
+              ) : (
+                <div className="mt-2 flex items-center gap-2">
+                  {showAdvanced && (
+                    <Input
+                      value={b.reply_id}
+                      onChange={(e) =>
+                        updateButton(i, {
+                          reply_id: slugify(e.target.value, `btn_${i + 1}`),
+                        })
+                      }
+                      placeholder="reply_id"
+                      className="bg-muted font-mono text-xs"
+                    />
+                  )}
+                  <NodeKeySelect
+                    value={b.next_node_key || null}
+                    nodes={allNodes}
+                    excludeKey={currentKey}
+                    onChange={(v) => updateButton(i, { next_node_key: v ?? "" })}
+                    placeholder={t("nextNodePlaceholder")}
+                  />
+                </div>
               )}
-              <Input
-                value={b.title}
-                onChange={(e) => updateButton(i, { title: e.target.value })}
-                placeholder={t("optionTitlePlaceholder")}
-                className="bg-muted"
-                maxLength={20}
-              />
-              <NodeKeySelect
-                value={b.next_node_key || null}
-                nodes={allNodes}
-                excludeKey={currentKey}
-                onChange={(v) => updateButton(i, { next_node_key: v ?? "" })}
-                placeholder={t("nextNodePlaceholder")}
-              />
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => removeButton(i)}
-                className="text-red-400 hover:bg-red-500/10 hover:text-red-300"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </Button>
             </div>
           ))}
         </div>
@@ -592,8 +640,15 @@ function SendListForm({
 interface ConditionCfg {
   subject?: "var" | "tag" | "contact_field";
   subject_key?: string;
-  operator?: "equals" | "contains" | "present" | "absent";
+  operator?: "equals" | "exact_match" | "contains" | "present" | "absent";
   value?: string;
+  else_ifs?: Array<{
+    subject?: "var" | "tag" | "contact_field";
+    subject_key?: string;
+    operator?: "equals" | "exact_match" | "contains" | "present" | "absent";
+    value?: string;
+    next_node_key: string;
+  }>;
   true_next?: string;
   false_next?: string;
 }
@@ -604,34 +659,41 @@ interface UserTag {
   color?: string;
 }
 
-function ConditionForm({
+interface PredicateCfg {
+  subject?: "var" | "tag" | "contact_field";
+  subject_key?: string;
+  operator?: "equals" | "exact_match" | "contains" | "present" | "absent";
+  value?: string;
+}
+
+/** Subject / operator / value triple used by the primary IF condition
+ *  and each ELSE IF row. `showAdvanced` gates the raw reply-style
+ *  fields the same way it does in the buttons form. */
+function ConditionPredicateFields({
   cfg,
-  allNodes,
-  currentKey,
-  onUpdateConfig,
+  tagLabel,
+  onUpdate,
   t,
 }: {
-  cfg: ConditionCfg;
-  allNodes: BuilderNode[];
-  currentKey: string;
-  onUpdateConfig: (patch: Record<string, unknown>) => void;
+  cfg: PredicateCfg;
+  tagLabel: string;
+  onUpdate: (patch: Partial<PredicateCfg>) => void;
   t: ReturnType<typeof useTranslations>;
 }) {
   const tags = useUserTags();
-
   const subject = cfg.subject ?? "var";
   const operator = cfg.operator ?? "equals";
-  const showValue = operator === "equals" || operator === "contains";
+  const showValue = operator === "equals" || operator === "exact_match" || operator === "contains";
 
   return (
     <>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
         <div>
-          <label className="mb-1 block text-xs text-muted-foreground">{t("ifLabel")}</label>
+          <label className="mb-1 block text-xs text-muted-foreground">{tagLabel}</label>
           <Select
             value={subject}
             onValueChange={(v) =>
-              onUpdateConfig({ subject: v as ConditionCfg["subject"] })
+              onUpdate({ subject: v as PredicateCfg["subject"] })
             }
           >
             <SelectTrigger className="bg-muted">
@@ -655,15 +717,15 @@ function ConditionForm({
           {subject === "tag" && tags.length > 0 ? (
             <Select
               value={cfg.subject_key ?? ""}
-              onValueChange={(v) => onUpdateConfig({ subject_key: v })}
+              onValueChange={(v) => onUpdate({ subject_key: v ?? undefined })}
             >
               <SelectTrigger className="bg-muted">
                 <SelectValue placeholder={t("pickTag")} />
               </SelectTrigger>
               <SelectContent>
-                {tags.map((t) => (
-                  <SelectItem key={t.id} value={t.id}>
-                    {t.name}
+                {tags.map((tag) => (
+                  <SelectItem key={tag.id} value={tag.id}>
+                    {tag.name}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -671,7 +733,7 @@ function ConditionForm({
           ) : subject === "contact_field" ? (
             <Select
               value={cfg.subject_key ?? ""}
-              onValueChange={(v) => onUpdateConfig({ subject_key: v })}
+              onValueChange={(v) => onUpdate({ subject_key: v ?? undefined })}
             >
               <SelectTrigger className="bg-muted">
                 <SelectValue placeholder={t("pickField")} />
@@ -686,9 +748,7 @@ function ConditionForm({
           ) : (
             <Input
               value={cfg.subject_key ?? ""}
-              onChange={(e) =>
-                onUpdateConfig({ subject_key: e.target.value })
-              }
+              onChange={(e) => onUpdate({ subject_key: e.target.value })}
               placeholder={subject === "var" ? t("varKeyPlaceholder") : t("tagUuidPlaceholder")}
               className="bg-muted font-mono text-xs"
             />
@@ -707,7 +767,7 @@ function ConditionForm({
           <Select
             value={operator}
             onValueChange={(v) =>
-              onUpdateConfig({ operator: v as ConditionCfg["operator"] })
+              onUpdate({ operator: v as PredicateCfg["operator"] })
             }
           >
             <SelectTrigger className="bg-muted">
@@ -716,6 +776,7 @@ function ConditionForm({
             <SelectContent>
               <SelectItem value="present">{t("isPresent")}</SelectItem>
               <SelectItem value="absent">{t("isAbsent")}</SelectItem>
+              <SelectItem value="exact_match">{t("exactMatch")}</SelectItem>
               <SelectItem value="equals">{t("equals")}</SelectItem>
               <SelectItem value="contains">{t("contains")}</SelectItem>
             </SelectContent>
@@ -726,29 +787,130 @@ function ConditionForm({
             <label className="mb-1 block text-xs text-muted-foreground">{t("valueLabel")}</label>
             <Input
               value={cfg.value ?? ""}
-              onChange={(e) => onUpdateConfig({ value: e.target.value })}
+              onChange={(e) => onUpdate({ value: e.target.value })}
               className="bg-muted"
             />
           </div>
         )}
       </div>
+    </>
+  );
+}
 
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-        <NextNodeRow
-          value={cfg.true_next ?? ""}
-          allNodes={allNodes}
-          currentKey={currentKey}
-          onChange={(v) => onUpdateConfig({ true_next: v })}
-          label={t("ifTrueAdvance")}
-        />
-        <NextNodeRow
-          value={cfg.false_next ?? ""}
-          allNodes={allNodes}
-          currentKey={currentKey}
-          onChange={(v) => onUpdateConfig({ false_next: v })}
-          label={t("ifFalseAdvance")}
-        />
+function ConditionForm({
+  cfg,
+  allNodes,
+  currentKey,
+  onUpdateConfig,
+  t,
+}: {
+  cfg: ConditionCfg;
+  allNodes: BuilderNode[];
+  currentKey: string;
+  onUpdateConfig: (patch: Record<string, unknown>) => void;
+  t: ReturnType<typeof useTranslations>;
+}) {
+  const elseIfs = cfg.else_ifs ?? [];
+
+  const addElseIf = () =>
+    onUpdateConfig({
+      else_ifs: [
+        ...elseIfs,
+        {
+          subject: "var",
+          subject_key: "",
+          operator: "equals",
+          value: "",
+          next_node_key: "",
+        },
+      ],
+    });
+  const updateElseIf = (
+    idx: number,
+    patch: Partial<NonNullable<ConditionCfg["else_ifs"]>[number]>,
+  ) =>
+    onUpdateConfig({
+      else_ifs: elseIfs.map((ei, i) => (i === idx ? { ...ei, ...patch } : ei)),
+    });
+  const removeElseIf = (idx: number) =>
+    onUpdateConfig({ else_ifs: elseIfs.filter((_, i) => i !== idx) });
+
+  return (
+    <>
+      <ConditionPredicateFields
+        cfg={cfg}
+        tagLabel={t("ifLabel")}
+        onUpdate={(patch) => onUpdateConfig({ ...patch })}
+        t={t}
+      />
+
+      <NextNodeRow
+        value={cfg.true_next ?? ""}
+        allNodes={allNodes}
+        currentKey={currentKey}
+        onChange={(v) => onUpdateConfig({ true_next: v })}
+        label={t("ifTrueAdvance")}
+      />
+
+      <div>
+        <div className="mb-2 flex items-center justify-between">
+          <label className="text-xs text-muted-foreground">
+            {t("elseIfHelp")}
+          </label>
+        </div>
+        <div className="flex flex-col gap-3">
+          {elseIfs.map((ei, i) => (
+            <div
+              key={i}
+              className="rounded-md border border-border bg-muted/40 p-3"
+            >
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-xs font-medium text-muted-foreground">
+                  {t("elseIfLabel", { n: i + 1 })}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => removeElseIf(i)}
+                  className="text-red-400 hover:bg-red-500/10 hover:text-red-300"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+              <ConditionPredicateFields
+                cfg={ei}
+                tagLabel={t("conditionLabel")}
+                onUpdate={(patch) => updateElseIf(i, patch)}
+                t={t}
+              />
+              <NextNodeRow
+                value={ei.next_node_key}
+                allNodes={allNodes}
+                currentKey={currentKey}
+                onChange={(v) => updateElseIf(i, { next_node_key: v })}
+                label={t("thenAdvanceTo")}
+              />
+            </div>
+          ))}
+        </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={addElseIf}
+          className="mt-2"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          {t("addElseIf")}
+        </Button>
       </div>
+
+      <NextNodeRow
+        value={cfg.false_next ?? ""}
+        allNodes={allNodes}
+        currentKey={currentKey}
+        onChange={(v) => onUpdateConfig({ false_next: v })}
+        label={t("ifFalseAdvance")}
+      />
     </>
   );
 }

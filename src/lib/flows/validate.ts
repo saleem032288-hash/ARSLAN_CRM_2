@@ -23,7 +23,7 @@
  * `node_key`; trigger-scoped use `scope: 'trigger'`.
  */
 
-import { INTERACTIVE_LIMITS } from "@/lib/whatsapp/meta-api";
+import { INTERACTIVE_LIMITS, isHttpUrl } from "@/lib/whatsapp/meta-api";
 
 export interface ValidationIssue {
   severity: "error" | "warning";
@@ -212,14 +212,32 @@ function validateNode(
     }
 
     case "send_message": {
-      const cfg = node.config as { text?: string; next_node_key?: string };
-      if (!cfg.text?.trim()) {
+      const cfg = node.config as {
+        text?: string;
+        media?: { type?: string; url?: string; filename?: string };
+        next_node_key?: string;
+      };
+      if (!cfg.text?.trim() && !cfg.media?.url?.trim()) {
         issues.push({
           severity: "error",
           scope: "node",
           node_key: node.node_key,
           field: "text",
-          message: "Send-message node needs a text body.",
+          message: "Send-message node needs a text body or an image/video attachment.",
+        });
+      }
+      if (
+        cfg.media?.url &&
+        cfg.media.type &&
+        cfg.media.type !== "image" &&
+        cfg.media.type !== "video"
+      ) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "media.type",
+          message: "Send-message node only supports image or video attachments.",
         });
       }
       if (!cfg.next_node_key) {
@@ -307,6 +325,8 @@ function validateNode(
         buttons?: Array<{
           reply_id?: string;
           title?: string;
+          type?: "reply" | "url";
+          url?: string;
           next_node_key?: string;
         }>;
       };
@@ -338,27 +358,72 @@ function validateNode(
           message: `WhatsApp allows at most ${INTERACTIVE_LIMITS.maxButtons} buttons per message.`,
         });
       }
+      // Meta models URL buttons as a separate CTA-URL message: exactly one
+      // URL button per message, never mixed with quick-reply buttons.
+      const urlCount = btns.filter((b) => b && b.type === "url").length;
+      if (urlCount > 0 && (urlCount !== 1 || btns.length !== 1)) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "buttons",
+          message:
+            "A URL button message allows exactly one URL button; it can't be combined with quick-reply buttons.",
+        });
+      }
       const seenIds = new Set<string>();
       btns.forEach((b, i) => {
         const field = `buttons.${i}`;
-        if (!b.reply_id?.trim()) {
-          issues.push({
-            severity: "error",
-            scope: "node",
-            node_key: node.node_key,
-            field: `${field}.reply_id`,
-            message: `Button ${i + 1} needs a reply id.`,
-          });
-        } else if (seenIds.has(b.reply_id)) {
-          issues.push({
-            severity: "error",
-            scope: "node",
-            node_key: node.node_key,
-            field: `${field}.reply_id`,
-            message: `Duplicate button reply id "${b.reply_id}".`,
-          });
+        const isUrl = b && b.type === "url";
+        // URL buttons open a link on tap — no reply routed, no next node.
+        if (isUrl) {
+          if (!isHttpUrl(b.url ?? "")) {
+            issues.push({
+              severity: "error",
+              scope: "node",
+              node_key: node.node_key,
+              field: `${field}.url`,
+              message: `Button ${i + 1} needs a valid http(s) link.`,
+            });
+          }
+        } else {
+          if (!b.reply_id?.trim()) {
+            issues.push({
+              severity: "error",
+              scope: "node",
+              node_key: node.node_key,
+              field: `${field}.reply_id`,
+              message: `Button ${i + 1} needs a reply id.`,
+            });
+          } else if (seenIds.has(b.reply_id)) {
+            issues.push({
+              severity: "error",
+              scope: "node",
+              node_key: node.node_key,
+              field: `${field}.reply_id`,
+              message: `Duplicate button reply id "${b.reply_id}".`,
+            });
+          }
+          if (b.reply_id) seenIds.add(b.reply_id);
+
+          if (!b.next_node_key) {
+            issues.push({
+              severity: "error",
+              scope: "node",
+              node_key: node.node_key,
+              field: `${field}.next_node_key`,
+              message: `Button ${i + 1} needs a next node.`,
+            });
+          } else if (!knownKeys.has(b.next_node_key)) {
+            issues.push({
+              severity: "error",
+              scope: "node",
+              node_key: node.node_key,
+              field: `${field}.next_node_key`,
+              message: `Button ${i + 1} points to non-existent node "${b.next_node_key}".`,
+            });
+          }
         }
-        if (b.reply_id) seenIds.add(b.reply_id);
 
         if (!b.title?.trim()) {
           issues.push({
@@ -375,24 +440,6 @@ function validateNode(
             node_key: node.node_key,
             field: `${field}.title`,
             message: `Button ${i + 1} title is over ${INTERACTIVE_LIMITS.buttonTitleMaxLength} chars (WhatsApp limit).`,
-          });
-        }
-
-        if (!b.next_node_key) {
-          issues.push({
-            severity: "error",
-            scope: "node",
-            node_key: node.node_key,
-            field: `${field}.next_node_key`,
-            message: `Button ${i + 1} needs a next node.`,
-          });
-        } else if (!knownKeys.has(b.next_node_key)) {
-          issues.push({
-            severity: "error",
-            scope: "node",
-            node_key: node.node_key,
-            field: `${field}.next_node_key`,
-            message: `Button ${i + 1} points to non-existent node "${b.next_node_key}".`,
           });
         }
       });
@@ -588,51 +635,39 @@ function validateNode(
       const cfg = node.config as {
         subject?: "var" | "tag" | "contact_field";
         subject_key?: string;
-        operator?: "equals" | "contains" | "present" | "absent";
+        operator?: "equals" | "exact_match" | "contains" | "present" | "absent";
         value?: string;
+        else_ifs?: Array<{
+          subject?: "var" | "tag" | "contact_field";
+          subject_key?: string;
+          operator?: "equals" | "exact_match" | "contains" | "present" | "absent";
+          value?: string;
+          next_node_key?: string;
+        }>;
         true_next?: string;
         false_next?: string;
       };
-      if (!cfg.subject || !["var", "tag", "contact_field"].includes(cfg.subject)) {
-        issues.push({
-          severity: "error",
-          scope: "node",
-          node_key: node.node_key,
-          field: "subject",
-          message: "Condition needs a subject (var / tag / contact_field).",
-        });
-      }
-      if (!cfg.subject_key?.trim()) {
-        issues.push({
-          severity: "error",
-          scope: "node",
-          node_key: node.node_key,
-          field: "subject_key",
-          message: "Condition needs a subject_key (var name, tag id, or field name).",
-        });
-      }
-      if (
-        !cfg.operator ||
-        !["equals", "contains", "present", "absent"].includes(cfg.operator)
-      ) {
-        issues.push({
-          severity: "error",
-          scope: "node",
-          node_key: node.node_key,
-          field: "operator",
-          message: "Condition needs an operator.",
-        });
-      } else if (
-        (cfg.operator === "equals" || cfg.operator === "contains") &&
-        (cfg.value === undefined || cfg.value === "")
-      ) {
-        issues.push({
-          severity: "warning",
-          scope: "node",
-          node_key: node.node_key,
-          field: "value",
-          message: `Operator "${cfg.operator}" usually expects a comparison value — empty value will only match empty subjects.`,
-        });
+      validateConditionPredicate(cfg, node.node_key, "primary", issues);
+      for (const [i, ei] of (cfg.else_ifs ?? []).entries()) {
+        const branchLabel = `else_if_${i + 1}`;
+        validateConditionPredicate(ei, node.node_key, branchLabel, issues);
+        if (!ei?.next_node_key) {
+          issues.push({
+            severity: "error",
+            scope: "node",
+            node_key: node.node_key,
+            field: `${branchLabel}.next_node_key`,
+            message: `Condition's "${branchLabel}" branch needs a node.`,
+          });
+        } else if (!knownKeys.has(ei.next_node_key)) {
+          issues.push({
+            severity: "error",
+            scope: "node",
+            node_key: node.node_key,
+            field: `${branchLabel}.next_node_key`,
+            message: `Condition's "${branchLabel}" branch points to non-existent node "${ei.next_node_key}".`,
+          });
+        }
       }
       for (const branch of ["true_next", "false_next"] as const) {
         const key = cfg[branch];
@@ -759,9 +794,13 @@ function outgoingEdges(node: NodeInput): string[] {
       const cfg = node.config as {
         true_next?: string;
         false_next?: string;
+        else_ifs?: Array<{ next_node_key?: string }>;
       };
       const out: string[] = [];
       if (cfg.true_next) out.push(cfg.true_next);
+      for (const ei of cfg.else_ifs ?? []) {
+        if (ei.next_node_key) out.push(ei.next_node_key);
+      }
       if (cfg.false_next) out.push(cfg.false_next);
       return out;
     }
@@ -789,5 +828,55 @@ function outgoingEdges(node: NodeInput): string[] {
     case "end":
     default:
       return [];
+  }
+}
+
+function validateConditionPredicate(
+  p: Record<string, unknown> | undefined,
+  nodeKey: string,
+  label: string,
+  issues: ValidationIssue[],
+): void {
+  const subject = p?.subject as string | undefined;
+  if (!subject || !["var", "tag", "contact_field"].includes(subject)) {
+    issues.push({
+      severity: "error",
+      scope: "node",
+      node_key: nodeKey,
+      field: `${label}.subject`,
+      message: `Condition needs a subject (var / tag / contact_field).`,
+    });
+  }
+  const subjectKey = p?.subject_key as string | undefined;
+  if (!subjectKey?.trim()) {
+    issues.push({
+      severity: "error",
+      scope: "node",
+      node_key: nodeKey,
+      field: `${label}.subject_key`,
+      message: `Condition needs a subject_key (var name, tag id, or field name).`,
+    });
+  }
+  const operator = p?.operator as string | undefined;
+  const VALID_OPS = ["equals", "exact_match", "contains", "present", "absent"];
+  if (!operator || !VALID_OPS.includes(operator)) {
+    issues.push({
+      severity: "error",
+      scope: "node",
+      node_key: nodeKey,
+      field: `${label}.operator`,
+      message: `Condition needs an operator.`,
+    });
+  } else if (
+    ["equals", "exact_match", "contains"].includes(operator) &&
+    (p?.value === undefined || p.value === "")
+  ) {
+    issues.push({
+      severity: "warning",
+      scope: "node",
+      node_key: nodeKey,
+      field: `${label}.value`,
+      message: `Operator "${operator}" usually expects a comparison value — empty value will only match empty subjects.`,
+    });
   }
 }

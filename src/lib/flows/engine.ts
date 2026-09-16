@@ -180,6 +180,9 @@ export function evaluateConditionPredicate(args: {
     case "absent":
       return args.subjectValue === undefined || args.subjectValue === "";
     case "equals":
+    case "exact_match":
+      // `exact_match` is the explicit name for case-sensitive equality;
+      // `equals` is the legacy alias kept for compatibility.
       if (args.subjectValue === undefined) return false;
       return args.subjectValue === (args.configValue ?? "");
     case "contains":
@@ -410,6 +413,9 @@ async function sendButtonsAndSuspend(
     buttons: cfg.buttons.map((b) => ({
       id: b.reply_id,
       title: interpolateVars(b.title, run.vars),
+      ...(b.type === "url" && b.url
+        ? { type: "url" as const, url: b.url }
+        : {}),
     })),
   });
   await logEvent(db, run.id, "message_sent", node.node_key, {
@@ -501,8 +507,8 @@ async function executeHandoff(
 }
 
 /**
- * Resolve a condition node's subject value from DB / run state, then
- * call the pure `evaluateConditionPredicate`. Splits out so the
+ * Resolve a condition predicate's subject value from DB / run state,
+ * then call the pure `evaluateConditionPredicate`. Splits out so the
  * predicate itself stays unit-testable without a Supabase mock.
  *
  * Subject sources:
@@ -512,45 +518,68 @@ async function executeHandoff(
  *     `subject_key` IS the tag UUID; the SELECT returns 1 row or 0.
  *   - `contact_field` → one of name/email/phone/company on `contacts`.
  */
-async function evaluateConditionNode(
+async function evaluateConditionPredicateNode(
   db: AdminClient,
   run: FlowRunRow,
-  cfg: ConditionNodeConfig,
+  p: Pick<ConditionNodeConfig, "subject" | "subject_key" | "operator" | "value">,
 ): Promise<boolean> {
   let subjectValue: string | undefined;
-  if (cfg.subject === "var") {
-    const v = run.vars[cfg.subject_key];
+  if (p.subject === "var") {
+    const v = run.vars[p.subject_key];
     subjectValue = typeof v === "string" ? v : v === undefined ? undefined : String(v);
-  } else if (cfg.subject === "tag") {
+  } else if (p.subject === "tag") {
     const { count } = await db
       .from("contact_tags")
       .select("contact_id", { count: "exact", head: true })
       .eq("contact_id", run.contact_id!)
-      .eq("tag_id", cfg.subject_key);
+      .eq("tag_id", p.subject_key);
     // For tags, "present" really is the only meaningful test — the
     // `present`/`absent` operators are the natural fit. equals/contains
     // against a tag UUID would still work mechanically (compare its
     // existence to the value).
-    subjectValue = (count ?? 0) > 0 ? cfg.subject_key : undefined;
+    subjectValue = (count ?? 0) > 0 ? p.subject_key : undefined;
   } else {
     const ALLOWED = ["name", "email", "phone", "company"] as const;
     type AllowedField = (typeof ALLOWED)[number];
-    if (!ALLOWED.includes(cfg.subject_key as AllowedField)) {
-      throw new Error(`unsupported contact_field: ${cfg.subject_key}`);
+    if (!ALLOWED.includes(p.subject_key as AllowedField)) {
+      throw new Error(`unsupported contact_field: ${p.subject_key}`);
     }
     const { data } = await db
       .from("contacts")
-      .select(cfg.subject_key)
+      .select(p.subject_key)
       .eq("id", run.contact_id!)
       .maybeSingle();
-    const raw = (data as Record<string, unknown> | null)?.[cfg.subject_key];
+    const raw = (data as Record<string, unknown> | null)?.[p.subject_key];
     subjectValue = typeof raw === "string" && raw.length > 0 ? raw : undefined;
   }
   return evaluateConditionPredicate({
-    operator: cfg.operator,
+    operator: p.operator,
     subjectValue,
-    configValue: cfg.value,
+    configValue: p.value,
   });
+}
+
+/**
+ * Pick the winning branch of an IF → ELSE IF → OTHER chain. Evaluates
+ * the primary predicate, then each ordered ELSE IF; the first match
+ * wins. Returns the branch label (matching the canvas `sourceHandle`
+ * scheme in lib/flows/edges.ts) plus the node to advance to.
+ */
+async function resolveConditionBranch(
+  db: AdminClient,
+  run: FlowRunRow,
+  cfg: ConditionNodeConfig,
+): Promise<{ branch: "true" | `else_if_${number}` | "false" } & { next: string }> {
+  if (await evaluateConditionPredicateNode(db, run, cfg)) {
+    return { branch: "true", next: cfg.true_next };
+  }
+  const elseIfs = cfg.else_ifs ?? [];
+  for (let i = 0; i < elseIfs.length; i += 1) {
+    if (await evaluateConditionPredicateNode(db, run, elseIfs[i])) {
+      return { branch: `else_if_${i + 1}`, next: elseIfs[i].next_node_key };
+    }
+  }
+  return { branch: "false", next: cfg.false_next };
 }
 
 /**
@@ -643,15 +672,30 @@ async function advanceFromNodeKey(
     if (node.node_type === "send_message") {
       const cfg = node.config as unknown as SendMessageNodeConfig;
       try {
-        const { whatsapp_message_id } = await engineSendText({
-          accountId: run.account_id,
-    userId: run.user_id,
-          conversationId: run.conversation_id!,
-          contactId: run.contact_id!,
-          text: interpolateVars(cfg.text, run.vars),
-        });
+        // When the node carries an image/video attachment it sends that
+        // instead of a plain text message — `text` becomes the caption.
+        const text = interpolateVars(cfg.text, run.vars);
+        const { whatsapp_message_id } = cfg.media?.url
+          ? await engineSendMedia({
+              accountId: run.account_id,
+        userId: run.user_id,
+              conversationId: run.conversation_id!,
+              contactId: run.contact_id!,
+              kind: cfg.media.type,
+              link: cfg.media.url,
+              caption: text.trim() ? text : undefined,
+              filename: cfg.media.filename,
+            })
+          : await engineSendText({
+              accountId: run.account_id,
+        userId: run.user_id,
+              conversationId: run.conversation_id!,
+              contactId: run.contact_id!,
+              text,
+            });
         await logEvent(db, run.id, "message_sent", node.node_key, {
           node_type: "send_message",
+          has_media: Boolean(cfg.media?.url),
           whatsapp_message_id,
         });
       } catch (err) {
@@ -746,11 +790,13 @@ async function advanceFromNodeKey(
     }
     if (node.node_type === "condition") {
       const cfg = node.config as unknown as ConditionNodeConfig;
-      let branch: "true" | "false";
       try {
-        branch = (await evaluateConditionNode(db, run, cfg))
-          ? "true"
-          : "false";
+        const chosen = await resolveConditionBranch(db, run, cfg);
+        currentKey = chosen.next;
+        await logEvent(db, run.id, "node_entered", node.node_key, {
+          condition_result: chosen.branch,
+          advancing_to: currentKey,
+        });
       } catch (err) {
         await logEvent(db, run.id, "error", node.node_key, {
           reason: "condition_evaluation_failed",
@@ -759,12 +805,6 @@ async function advanceFromNodeKey(
         await endRun(db, run.id, "failed", "condition_evaluation_failed");
         return { outcome: "completed" };
       }
-      currentKey =
-        branch === "true" ? cfg.true_next : cfg.false_next;
-      await logEvent(db, run.id, "node_entered", node.node_key, {
-        condition_result: branch,
-        advancing_to: currentKey,
-      });
       continue;
     }
     if (node.node_type === "set_tag") {

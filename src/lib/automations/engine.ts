@@ -3,6 +3,7 @@ import type {
   AutomationLogStepResult,
   AutomationStep,
   AutomationTriggerType,
+  ConditionPredicate,
   ConditionStepConfig,
   KeywordMatchTriggerConfig,
   InteractiveReplyTriggerConfig,
@@ -21,7 +22,7 @@ import type {
 import { supabaseAdmin } from './admin-client'
 import { addContactTagIfAbsent } from '@/lib/contacts/tag-write'
 import { MAX_TAG_CHAIN_DEPTH, getTagChainDepth } from '@/lib/contacts/tag-chain'
-import { engineSendText, engineSendTemplate, engineSendInteractive } from './meta-send'
+import { engineSendText, engineSendTemplate, engineSendInteractive, engineSendMedia } from './meta-send'
 import { validateInteractivePayload } from '@/lib/whatsapp/interactive'
 import { isDeliverableUrl } from '@/lib/webhooks/ssrf'
 
@@ -134,7 +135,7 @@ export async function resumePendingExecution(pending: {
   contact_id: string | null
   log_id: string | null
   parent_step_id: string | null
-  branch: 'yes' | 'no' | null
+  branch: string | null
   next_step_position: number
   context: AutomationContext
 }): Promise<void> {
@@ -235,7 +236,7 @@ interface ExecuteArgs {
   contactId: string | null
   context: AutomationContext
   parentStepId: string | null
-  branch: 'yes' | 'no' | null
+  branch: string | null
   startPosition: number
   logId: string | null
   triggerEvent: string
@@ -307,19 +308,19 @@ async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
     try {
       if (step.step_type === 'condition') {
         const cfg = step.step_config as ConditionStepConfig
-        const taken = await evaluateCondition(cfg, args)
+        const branch = await resolveConditionBranch(cfg, args)
         results.push({
           step_id: step.id,
           step_type: 'condition',
           status: 'success',
-          detail: `branch=${taken ? 'yes' : 'no'}`,
+          detail: `branch=${branch}`,
         })
         // Recurse into the chosen branch at position 0 (children use their
         // own ordering within the branch scope).
         await executeStepsFrom({
           ...args,
           parentStepId: step.id,
-          branch: taken ? 'yes' : 'no',
+          branch,
           startPosition: 0,
           logId: args.logId,
         })
@@ -363,15 +364,28 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       const cfg = step.step_config as SendMessageStepConfig
       if (!args.contactId) throw new Error('send_message needs a contact')
       const text = interpolate(cfg.text, args)
-      if (!text.trim()) throw new Error('send_message has empty text')
+      // Image/video attachments: Meta fetches the file at send time, so
+      // no extra validation here — the Send via `engineSendMedia` path
+      // (same account-scoped retries as the flows engine) when present.
+      if (!text.trim() && !cfg.media?.url) {
+        throw new Error('send_message has empty text or no attachment')
+      }
       const conversationId = await resolveConversationId(args)
-      const { whatsapp_message_id } = await engineSendText({
+      const common = {
         accountId: args.automation.account_id,
         userId: args.automation.user_id,
         conversationId,
         contactId: args.contactId,
-        text,
-      })
+      }
+      const { whatsapp_message_id } = cfg.media?.url
+        ? await engineSendMedia({
+            ...common,
+            kind: cfg.media.type,
+            link: cfg.media.url,
+            caption: text.trim() ? text : undefined,
+            filename: cfg.media.filename,
+          })
+        : await engineSendText({ ...common, text })
       return `sent via Meta (${whatsapp_message_id})`
     }
 
@@ -733,7 +747,27 @@ export function triggerMatches(automation: Automation, ctx: AutomationContext | 
   return true
 }
 
-async function evaluateCondition(cfg: ConditionStepConfig, args: ExecuteArgs): Promise<boolean> {
+/**
+ * Pick the winning branch label for a condition step: 'yes' when the
+ * primary predicate matches, `else_if_<i+1>` when the ith ELSE IF
+ * matches, or 'no' (OTHER) when none do. First match wins, matching
+ * the IF → ELSE IF → OTHER semantics.
+ */
+async function resolveConditionBranch(
+  cfg: ConditionStepConfig,
+  args: ExecuteArgs,
+): Promise<'yes' | `else_if_${number}` | 'no'> {
+  if (await evaluateCondition(cfg, args)) return 'yes'
+  const elseIfs = cfg.else_ifs ?? []
+  for (let i = 0; i < elseIfs.length; i += 1) {
+    if (await evaluateCondition(elseIfs[i], args)) {
+      return `else_if_${i + 1}`
+    }
+  }
+  return 'no'
+}
+
+async function evaluateCondition(cfg: ConditionPredicate, args: ExecuteArgs): Promise<boolean> {
   const db = supabaseAdmin()
   switch (cfg.subject) {
     case 'tag_presence': {
@@ -759,11 +793,17 @@ async function evaluateCondition(cfg: ConditionStepConfig, args: ExecuteArgs): P
         .eq('account_id', args.automation.account_id)
         .maybeSingle()
       const v = (data as Record<string, unknown> | null)?.[cfg.operand]
+      // contact_field is inherently an exact comparison.
       return v != null && String(v) === String(cfg.value ?? '')
     }
     case 'message_content': {
       const text = (args.context.message_text ?? '').toString()
-      return text.toLowerCase().includes((cfg.value ?? '').toLowerCase())
+      const expected = (cfg.value ?? '').toString()
+      if (!text) return false
+      if ((cfg.operator ?? 'contains') === 'exact_match') {
+        return text.toLowerCase() === expected.toLowerCase()
+      }
+      return text.toLowerCase().includes(expected.toLowerCase())
     }
     case 'time_of_day': {
       // operand form "HH:mm-HH:mm" — true if now is within that window
@@ -786,7 +826,14 @@ async function evaluateCondition(cfg: ConditionStepConfig, args: ExecuteArgs): P
 }
 
 function waitMs(cfg: WaitStepConfig): number {
-  const unitMs = cfg.unit === 'days' ? 86_400_000 : cfg.unit === 'hours' ? 3_600_000 : 60_000
+  const unitMs =
+    cfg.unit === 'days'
+      ? 86_400_000
+      : cfg.unit === 'hours'
+        ? 3_600_000
+        : cfg.unit === 'seconds'
+          ? 1_000
+          : 60_000
   return Math.max(1_000, cfg.amount * unitMs)
 }
 

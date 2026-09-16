@@ -269,7 +269,19 @@ export async function sendMessageToConversation(
     );
   }
 
-  const accessToken = decrypt(config.access_token);
+  // A rotated / mismatched ENCRYPTION_KEY makes decrypt throw. Surface
+  // it as a typed SendMessageError so callers return a clear, actionable
+  // failure instead of a generic 500 with no explanation.
+  let accessToken: string;
+  try {
+    accessToken = decrypt(config.access_token);
+  } catch {
+    throw new SendMessageError(
+      'whatsapp_credentials_corrupted',
+      'The stored WhatsApp access token could not be decrypted. Re-save your WhatsApp connection (the ENCRYPTION_KEY may have changed).',
+      500
+    );
+  }
 
   // Self-heal legacy CBC ciphertexts. Fire-and-forget; idempotent.
   if (isLegacyFormat(config.access_token)) {

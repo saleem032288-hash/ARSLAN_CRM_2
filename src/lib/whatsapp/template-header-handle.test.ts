@@ -70,9 +70,17 @@ describe('ensureMediaHeaderHandle', () => {
     expect(p.header_handle).toBe('existing');
   });
 
-  it('throws an actionable error when META_APP_ID is unset', async () => {
+  it('throws an actionable error when no Meta App ID is available', async () => {
     const p = payload();
-    await expect(ensureMediaHeaderHandle(p, 'tok')).rejects.toThrow(/META_APP_ID/);
+    await expect(ensureMediaHeaderHandle(p, 'tok')).rejects.toThrow(/Meta App ID/i);
+  });
+
+  it('uses the per-connection app_id passed in (migration 043) without env', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => mediaResponse('image/jpeg', 2048)));
+    const p = payload();
+    await ensureMediaHeaderHandle(p, 'tok', 'account-app-123');
+    expect(uploadResumableMedia).toHaveBeenCalledOnce();
+    expect(vi.mocked(uploadResumableMedia).mock.calls[0][0].appId).toBe('account-app-123');
   });
 
   describe('image headers (unchanged from #230)', () => {

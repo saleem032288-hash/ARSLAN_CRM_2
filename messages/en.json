@@ -79,7 +79,8 @@
       "newTodayVsYesterday": "new today vs yesterday",
       "vsYesterday": "vs yesterday",
       "openDeals": "{count} open {count, plural, =1 {deal} other {deals}}",
-      "noChange": "No change {suffix}"
+      "noChange": "No change {suffix}",
+      "loadError": "Couldn't load this data. Refresh to try again."
     },
     "quickActions": {
       "newContact": "New Contact",
@@ -714,7 +715,8 @@
       "retryFailed": "Retry failed ({count})",
       "toastResumeStarted": "Sending {count} recipients in the background.",
       "toastResumeStartedCapped": "Sending {count} recipients in the background. {remaining} more will need another run.",
-      "toastResumeFailed": "Could not resume: {error}"
+      "toastResumeFailed": "Could not resume: {error}",
+      "modeSuperSafe": "Super Safe"
     },
     "new": {
       "title": "New Broadcast",
@@ -740,7 +742,8 @@
         "subtitle": "Select an approved message template for your broadcast.",
         "noTemplates": "No templates available.",
         "createFirst": "Create a template in Settings first.",
-        "errorLoad": "Failed to load templates"
+        "errorLoad": "Failed to load templates",
+        "headerVarUnsupported": "This template's header uses a variable, which broadcasts can't fill in yet. Pick another template."
       },
       "selectAudience": {
         "title": "Select Audience",
@@ -835,8 +838,18 @@
         "toastFailedPreview": "Failed to load preview data",
         "estimatedReach": "Estimated Reach",
         "language": "Language",
+        "sendingMode": "Sending Mode",
+        "modeInstant": "Instant",
+        "modeInstantDesc": "Sends as fast as Meta's own limits allow. Faster, but higher risk of the number being flagged.",
+        "modeSuperSafe": "Super Safe",
+        "modeSuperSafeDesc": "Roughly 8 messages/minute to reduce the chance WhatsApp flags the number. Slower, but safest.",
+        "estTime": "Estimated time: about {minutes} {minutes, plural, =1 {minute} other {minutes}}",
+        "modeRow": "Sending mode:",
+        "superSafeEstimate": "Super Safe sends about 8 messages/minute, so this will take roughly {minutes} {minutes, plural, =1 {minute} other {minutes}}.",
         "confirmTitle": "Confirm Broadcast",
-        "confirmDesc": "You are about to send this broadcast to <b>{count, number}</b> {count, plural, =1 {contact} other {contacts}} using the <b>{template}</b> template. This action cannot be undone."
+        "confirmDesc": "You are about to send this broadcast to <b>{count, number}</b> {count, plural, =1 {contact} other {contacts}} using the <b>{template}</b> template. This action cannot be undone.",
+        "confirmSuperSafe": "With Super Safe mode this will take about {minutes} {minutes, plural, =1 {minute} other {minutes}}.",
+        "confirmInstant": "This will be sent as fast as WhatsApp allows."
       }
     }
   },
@@ -1011,6 +1024,7 @@
       },
       "branches": {
         "yes": "Yes",
+        "elseIf": "ELSE IF",
         "no": "No"
       },
       "addStep": "Add step",
@@ -1023,6 +1037,7 @@
       "config": {
         "messageText": "Message text",
         "placeholderMessageText": "Hi! Thanks for reaching out…",
+        "mediaAttachment": "Attachment (optional)",
         "tagLabel": "Tag",
         "modeLabel": "Mode",
         "modes": {
@@ -1032,11 +1047,21 @@
         "agentLabel": "Agent",
         "fieldLabel": "Field",
         "valueLabel": "Value",
+        "operatorLabel": "Operator",
+        "operators": {
+          "contains": "Contains",
+          "exact_match": "Exact match"
+        },
+        "ifLabel": "IF",
+        "elseIfLabel": "ELSE IF",
+        "addElseIf": "Add else-if branch",
+        "removeElseIf": "Remove",
         "placeholderValue": "Text or {{ vars.x }} / {{ message.text }}",
         "titleLabel": "Title",
         "amountLabel": "Amount",
         "unitLabel": "Unit",
         "units": {
+          "seconds": "Seconds",
           "minutes": "Minutes",
           "hours": "Hours",
           "days": "Days"
@@ -1154,6 +1179,13 @@
       "form": {
         "advancesTo": "Advances to",
         "textToCustomer": "Text sent to the customer",
+        "attachVideo": "Attach a video (optional)",
+        "videoAttachmentHint": "Sends as a WhatsApp video message; the text above becomes its caption.",
+        "buttonType": "Type",
+        "buttonTypeReply": "Quick reply",
+        "buttonTypeUrl": "URL",
+        "urlPlaceholder": "https://example.com",
+        "urlButtonHint": "Opens this link when tapped. A CTA-URL message allows exactly one URL button and never advances the run.",
         "promptToCustomer": "Prompt sent to the customer",
         "varKeyLabel": "Variable key (stored in flow_runs.vars; alphanumeric + underscore)",
         "varKeyPlaceholder": "e.g. name, email, company",
@@ -1191,6 +1223,11 @@
         "ifTrueAdvance": "If true → advance to",
         "ifFalseAdvance": "If false → advance to",
         "actionLabel": "Action",
+        "addElseIf": "Add ELSE IF branch",
+        "elseIfLabel": "ELSE IF",
+        "elseIfHelp": "ELSE IF branches (optional) — evaluated top to bottom; the first true match routes to its node, otherwise the flow takes the false path.",
+        "conditionLabel": "Condition",
+        "exactMatch": "matches exactly",
         "addTag": "Add tag",
         "removeTag": "Remove tag",
         "tagUuidPlaceholder": "Tag UUID",
@@ -1289,6 +1326,7 @@
       "opContains": "contains",
       "opExists": "exists",
       "opMissing": "missing",
+      "elseIfCount": "else if × {count}",
       "modeAdd": "Add",
       "modeRemove": "Remove",
       "tagPicked": "{mode} tag {tag}…",
@@ -1627,6 +1665,7 @@
       "wabaIdPlaceholder": "e.g. 100234567890456",
       "saving": "Saving...",
       "saveConfig": "Save Configuration",
+      "adminOnlyConfig": "Only admins and owners can change the WhatsApp connection.",
       "testing": "Testing...",
       "testConnection": "Test API Connection",
       "setupInstructions": "Setup Instructions",
@@ -1660,6 +1699,15 @@
       "metaErrorDetailsHint": "Quote these details when contacting Meta support.",
       "phoneNumberIdNotNumeric": "Phone Number ID must contain only digits. Copy the numeric id from Meta → WhatsApp → API Setup, not the phone number itself.",
       "wabaIdNotNumeric": "WhatsApp Business Account ID must contain only digits. Copy it from Meta → WhatsApp → API Setup.",
+      "metaAppId": "Meta App ID",
+      "metaAppIdPlaceholder": "e.g. 123456789123456",
+      "metaAppIdHint": "Numeric id of the Meta App that owns this number. Copy it from Meta for Developers → App Settings → Basic. Used for media-header templates and the WABA-subscription check.",
+      "metaAppSecret": "Meta App Secret",
+      "metaAppSecretPlaceholder": "Enter your Meta App Secret",
+      "metaAppSecretHint": "The App Secret Meta uses to sign webhook deliveries. Stored encrypted per connection and used to verify inbound signatures — no .env variable needed.",
+      "appSecretHidden": "App Secret is hidden for security. Re-enter it to change it.",
+      "appIdNotNumeric": "Meta App ID must contain only digits. Copy it from Meta → App Settings → Basic.",
+      "appSecretRequired": "Meta App Secret is required to create a new connection",
       "wabaSubscribed": "The WhatsApp Business Account is subscribed to this app — inbound webhooks can be delivered.",
       "wabaNotSubscribed": "The WhatsApp Business Account is not subscribed to this app, so Meta will not deliver inbound webhooks. Re-enter the access token and save again to subscribe it."
     },
@@ -2030,7 +2078,23 @@
     "rowTitlePlaceholder": "Row title",
     "rowDescriptionPlaceholder": "Description (optional)",
     "addRow": "Add row",
-    "addSection": "Add section"
+    "addSection": "Add section",
+    "buttonType": "Type",
+    "buttonTypeReply": "Quick reply",
+    "buttonTypeUrl": "URL",
+    "urlPlaceholder": "https://example.com"
+  },
+  "MediaUpload": {
+    "uploading": "Uploading…",
+    "tooLarge": "File is over the {limit} MB limit.",
+    "remove": "Remove attachment"
+  },
+  "MediaSend": {
+    "image": "Image",
+    "video": "Video",
+    "attachImage": "Attach an image (optional)",
+    "attachVideo": "Attach a video (optional)",
+    "hint": "Sent as a WhatsApp image or video; the message text becomes the caption."
   },
   "DashboardShell": {
     "loading": "Loading..."

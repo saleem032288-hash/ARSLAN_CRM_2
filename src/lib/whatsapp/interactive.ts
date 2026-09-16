@@ -21,13 +21,28 @@
 // mid-conversation.
 // ============================================================
 
-import { INTERACTIVE_LIMITS } from './meta-api'
+import { INTERACTIVE_LIMITS, isHttpUrl } from './meta-api'
 
 export interface InteractiveButton {
-  /** Stable id echoed back in the webhook when tapped. */
+  /** Stable id echoed back in the webhook when tapped.
+   *  Not used for `url` buttons, but kept required so both flavours share
+   *  the same shape (a URL button opens a link instead of replying). */
   id: string
   /** Visible label (≤ 20 chars per Meta). */
   title: string
+  /**
+   * `reply` (default) — customer taps and Meta delivers a webhook with the
+   * button id. `url` — opens an http(s) link in the customer's browser.
+   *
+   * Meta models URL buttons as a separate CTA-URL message type
+   * (`interactive.type: "cta_url"`): exactly ONE URL button per message
+   * and it cannot be combined with quick-reply buttons. Both the builder
+   * and this validator enforce that.
+   */
+  type?: 'reply' | 'url'
+  /** Absolute http(s) URL the customer's browser opens — required when
+   *  `type === 'url'`. */
+  url?: string
 }
 
 export interface InteractiveButtonsPayload {
@@ -135,12 +150,37 @@ export function validateInteractivePayload(
     }
     if (buttons.length > INTERACTIVE_LIMITS.maxButtons) {
       return fail(
-        `A reply-button message allows at most ${INTERACTIVE_LIMITS.maxButtons} buttons.`,
+        `A button message allows at most ${INTERACTIVE_LIMITS.maxButtons} buttons.`,
+      )
+    }
+    const urlButtons = buttons.filter((b) => b && b.type === 'url')
+    if (urlButtons.length > 0 && (urlButtons.length !== 1 || buttons.length !== 1)) {
+      return fail(
+        'A URL button message allows exactly one URL button; URL buttons cannot be combined with quick-reply buttons.',
       )
     }
     const seen = new Set<string>()
     for (const b of buttons) {
-      if (!b || typeof b.id !== 'string' || b.id.trim() === '') {
+      if (!b) {
+        return fail('Every button needs an id.')
+      }
+      // URL buttons open a link on tap — they need the label + a valid
+      // http(s) link, but no reply id (nothing is echoed back in a webhook).
+      if (b.type === 'url') {
+        if (typeof b.title !== 'string' || b.title.trim() === '') {
+          return fail('The URL button needs a label.')
+        }
+        if (b.title.length > INTERACTIVE_LIMITS.buttonTitleMaxLength) {
+          return fail(
+            `Button label "${b.title}" exceeds the ${INTERACTIVE_LIMITS.buttonTitleMaxLength}-character limit.`,
+          )
+        }
+        if (typeof b.url !== 'string' || !isHttpUrl(b.url)) {
+          return fail('The URL button needs a valid http(s) link.')
+        }
+        continue
+      }
+      if (typeof b.id !== 'string' || b.id.trim() === '') {
         return fail('Every button needs an id.')
       }
       if (seen.has(b.id)) {

@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { MessageTemplate } from '@/types';
+import { extractVariableIndices } from '@/lib/whatsapp/template-validators';
 import { Button } from '@/components/ui/button';
 import { Loader2, FileText, ArrowRight } from 'lucide-react';
 import { useTranslations } from 'next-intl';
@@ -87,15 +88,26 @@ export function Step1ChooseTemplate({ selectedTemplate, onSelect, onNext, onBack
           {templates.map((template) => {
             const isSelected = selectedTemplate?.id === template.id;
             const catColor = categoryColors[template.category] ?? categoryColors.Utility;
+            // Broadcasts can fill body variables per recipient but have
+            // no way to supply a TEXT-header variable, so Meta rejects
+            // every send for these. Disable them rather than letting the
+            // user launch a campaign that can't deliver.
+            const headerVarUnsupported =
+              template.header_type === 'text' &&
+              extractVariableIndices(template.header_content ?? '').length > 0;
 
             return (
               <button
                 key={template.id}
                 onClick={() => onSelect(template)}
+                disabled={headerVarUnsupported}
+                title={headerVarUnsupported ? t('chooseTemplate.headerVarUnsupported') : undefined}
                 className={`flex flex-col gap-3 rounded-xl border p-4 text-left transition-all ${
-                  isSelected
-                    ? 'border-primary bg-primary/5 ring-1 ring-primary/30'
-                    : 'border-border bg-card/50 hover:border-border hover:bg-card'
+                  headerVarUnsupported
+                    ? 'cursor-not-allowed border-border bg-card/30 opacity-60'
+                    : isSelected
+                      ? 'border-primary bg-primary/5 ring-1 ring-primary/30'
+                      : 'border-border bg-card/50 hover:border-border hover:bg-card'
                 }`}
               >
                 <div className="flex items-start justify-between">
@@ -107,6 +119,11 @@ export function Step1ChooseTemplate({ selectedTemplate, onSelect, onNext, onBack
                   </span>
                 </div>
                 <p className="line-clamp-3 text-xs text-muted-foreground">{template.body_text}</p>
+                {headerVarUnsupported && (
+                  <p className="text-[10px] font-medium text-amber-400">
+                    {t('chooseTemplate.headerVarUnsupported')}
+                  </p>
+                )}
                 <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
                   <span>{template.language ?? 'en_US'}</span>
                   {/* Status is omitted on purpose — every template

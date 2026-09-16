@@ -79,7 +79,8 @@
       "newTodayVsYesterday": "novos hoje vs. ontem",
       "vsYesterday": "vs. ontem",
       "openDeals": "{count} {count, plural, =1 {negócio aberto} other {negócios abertos}}",
-      "noChange": "Sem alteração {suffix}"
+      "noChange": "Sem alteração {suffix}",
+      "loadError": "Não foi possível carregar estes dados. Atualize para tentar novamente."
     },
     "quickActions": {
       "newContact": "Novo contato",
@@ -472,7 +473,11 @@
       "resultTags": "{count} tag atribuída",
       "resultTags_plural": "{count} tags atribuídas",
       "resultSkipped": "{count} ignorados",
+      "resultInvalidPhone": "{count} telefone inválido",
+      "resultInvalidPhone_plural": "{count} telefones inválidos",
       "resultFailed": "{count} com falha",
+      "failedRowsHeading": "Linhas com falha",
+      "unknownReason": "Erro desconhecido",
       "willBeCreated": "{name} (será criada na importação)",
       "columns": {
         "phone": "Telefone",
@@ -494,6 +499,8 @@
       "toastTagsSkipped": "Tags desconhecidas ignoradas (crie-as primeiro em Configurações): {sample}{more}",
       "toastSkipped": "{count} duplicado ignorado",
       "toastSkipped_plural": "{count} duplicados ignorados",
+      "toastInvalidPhone": "{count} contato não tinha telefone utilizável",
+      "toastInvalidPhone_plural": "{count} contatos não tinham telefone utilizável",
       "toastFailed": "{count} contato não pôde ser importado",
       "toastFailed_plural": "{count} contatos não puderam ser importados",
       "toastError": "Falha na importação"
@@ -708,7 +715,8 @@
       "retryFailed": "Tentar novamente os que falharam ({count})",
       "toastResumeStarted": "Enviando para {count} destinatários em segundo plano.",
       "toastResumeStartedCapped": "Enviando para {count} destinatários em segundo plano. Outros {remaining} precisarão de mais uma execução.",
-      "toastResumeFailed": "Não foi possível retomar: {error}"
+      "toastResumeFailed": "Não foi possível retomar: {error}",
+      "modeSuperSafe": "Super seguro"
     },
     "new": {
       "title": "Novo disparo",
@@ -734,7 +742,8 @@
         "subtitle": "Selecione um modelo de mensagem aprovado para o seu disparo.",
         "noTemplates": "Nenhum modelo disponível.",
         "createFirst": "Crie um modelo em Configurações primeiro.",
-        "errorLoad": "Falha ao carregar os modelos"
+        "errorLoad": "Falha ao carregar os modelos",
+        "headerVarUnsupported": "O cabeçalho deste modelo usa uma variável que os disparos ainda não conseguem preencher. Escolha outro modelo."
       },
       "selectAudience": {
         "title": "Selecionar público",
@@ -829,8 +838,18 @@
         "toastFailedPreview": "Falha ao carregar os dados da pré-visualização",
         "estimatedReach": "Alcance estimado",
         "language": "Idioma",
+        "sendingMode": "Modo de envio",
+        "modeInstant": "Instantâneo",
+        "modeInstantDesc": "Envia o mais rápido que os limites da Meta permitem. Mais rápido, mas com maior risco de o número ser sinalizado.",
+        "modeSuperSafe": "Super seguro",
+        "modeSuperSafeDesc": "Cerca de 8 mensagens por minuto para reduzir a chance de o WhatsApp sinalizar o número. Mais lento, porém mais seguro.",
+        "estTime": "Tempo estimado: cerca de {minutes} {minutes, plural, =1 {minuto} other {minutos}}",
+        "modeRow": "Modo de envio:",
+        "superSafeEstimate": "O modo Super seguro envia cerca de 8 mensagens por minuto, então levará aproximadamente {minutes} {minutes, plural, =1 {minuto} other {minutos}}.",
         "confirmTitle": "Confirmar disparo",
-        "confirmDesc": "Você está prestes a enviar este disparo para <b>{count, number}</b> {count, plural, =1 {contato} other {contatos}} usando o modelo <b>{template}</b>. Esta ação não pode ser desfeita."
+        "confirmDesc": "Você está prestes a enviar este disparo para <b>{count, number}</b> {count, plural, =1 {contato} other {contatos}} usando o modelo <b>{template}</b>. Esta ação não pode ser desfeita.",
+        "confirmSuperSafe": "No modo Super seguro, isso levará cerca de {minutes} {minutes, plural, =1 {minuto} other {minutos}}.",
+        "confirmInstant": "Isso será enviado o mais rápido que o WhatsApp permitir."
       }
     }
   },
@@ -1005,6 +1024,7 @@
       },
       "branches": {
         "yes": "Sim",
+        "elseIf": "SENÃO SE",
         "no": "Não"
       },
       "addStep": "Adicionar etapa",
@@ -1017,6 +1037,7 @@
       "config": {
         "messageText": "Texto da mensagem",
         "placeholderMessageText": "Olá! Obrigado por entrar em contato…",
+        "mediaAttachment": "Anexo (opcional)",
         "tagLabel": "Tag",
         "modeLabel": "Modo",
         "modes": {
@@ -1026,11 +1047,21 @@
         "agentLabel": "Agente",
         "fieldLabel": "Campo",
         "valueLabel": "Valor",
+        "operatorLabel": "Operador",
+        "operators": {
+          "contains": "Contém",
+          "exact_match": "Correspondência exata"
+        },
+        "ifLabel": "SE",
+        "elseIfLabel": "SENÃO SE",
+        "addElseIf": "Adicionar ramo senão-se",
+        "removeElseIf": "Remover",
         "placeholderValue": "Texto ou {{ vars.x }} / {{ message.text }}",
         "titleLabel": "Título",
         "amountLabel": "Quantidade",
         "unitLabel": "Unidade",
         "units": {
+          "seconds": "Segundos",
           "minutes": "Minutos",
           "hours": "Horas",
           "days": "Dias"
@@ -1148,6 +1179,13 @@
       "form": {
         "advancesTo": "Avança para",
         "textToCustomer": "Texto enviado ao cliente",
+        "attachVideo": "Anexar um vídeo (opcional)",
+        "videoAttachmentHint": "Enviado como mensagem de vídeo do WhatsApp; o texto acima vira a legenda.",
+        "buttonType": "Tipo",
+        "buttonTypeReply": "Resposta rápida",
+        "buttonTypeUrl": "URL",
+        "urlPlaceholder": "https://example.com",
+        "urlButtonHint": "Abre este link ao tocar. Uma mensagem CTA-URL permite exatamente um botão URL e nunca avança o fluxo.",
         "promptToCustomer": "Pergunta enviada ao cliente",
         "varKeyLabel": "Chave da variável (armazenada em flow_runs.vars; alfanumérico + underscore)",
         "varKeyPlaceholder": "ex.: name, email, company",
@@ -1185,6 +1223,11 @@
         "ifTrueAdvance": "Se verdadeiro → avançar para",
         "ifFalseAdvance": "Se falso → avançar para",
         "actionLabel": "Ação",
+        "addElseIf": "Adicionar ramo SENÃO SE",
+        "elseIfLabel": "SENÃO SE",
+        "elseIfHelp": "Ramos SENÃO SE (opcional) — avaliados de cima para baixo; a primeira correspondência verdadeira roteia para o nó dela; caso contrário, o fluxo segue o caminho falso.",
+        "conditionLabel": "Condição",
+        "exactMatch": "corresponde exatamente",
         "addTag": "Adicionar tag",
         "removeTag": "Remover tag",
         "tagUuidPlaceholder": "UUID da tag",
@@ -1283,6 +1326,7 @@
       "opContains": "contém",
       "opExists": "existe",
       "opMissing": "ausente",
+      "elseIfCount": "senão se × {count}",
       "modeAdd": "Adicionar",
       "modeRemove": "Remover",
       "tagPicked": "{mode} tag {tag}…",
@@ -1611,6 +1655,7 @@
       "wabaIdPlaceholder": "ex.: 100234567890456",
       "saving": "Salvando...",
       "saveConfig": "Salvar configuração",
+      "adminOnlyConfig": "Somente administradores e proprietários podem alterar a conexão do WhatsApp.",
       "testing": "Testando...",
       "testConnection": "Testar conexão com a API",
       "setupInstructions": "Instruções de configuração",
@@ -1644,6 +1689,15 @@
       "metaErrorDetailsHint": "Cite estes detalhes ao contatar o suporte da Meta.",
       "phoneNumberIdNotNumeric": "O Phone Number ID deve conter apenas dígitos. Copie o id numérico em Meta → WhatsApp → Configuração da API, não o número de telefone em si.",
       "wabaIdNotNumeric": "O ID da conta do WhatsApp Business deve conter apenas dígitos. Copie-o em Meta → WhatsApp → Configuração da API.",
+      "metaAppId": "ID do App da Meta",
+      "metaAppIdPlaceholder": "ex.: 123456789123456",
+      "metaAppIdHint": "ID numérico do App da Meta proprietário deste número. Copie de Meta for Developers → Configurações do app → Básico. Usado para modelos com cabeçalho de mídia e a verificação da assinatura do WABA.",
+      "metaAppSecret": "Chave secreta do App da Meta",
+      "metaAppSecretPlaceholder": "Digite a chave secreta do App da Meta",
+      "metaAppSecretHint": "A chave que a Meta usa para assinar as entregas de webhook. Armazenada criptografada por conexão e usada para verificar assinaturas de entrada — sem necessidade de variável .env.",
+      "appSecretHidden": "A chave secreta está oculta por segurança. Digite-a novamente para alterar.",
+      "appIdNotNumeric": "O ID do App da Meta deve conter apenas dígitos. Copie-o em Meta → Configurações do app → Básico.",
+      "appSecretRequired": "A chave secreta do App da Meta é obrigatória para criar uma nova conexão",
       "wabaSubscribed": "A conta do WhatsApp Business está inscrita neste app — os webhooks de entrada podem ser entregues.",
       "wabaNotSubscribed": "A conta do WhatsApp Business não está inscrita neste app, então a Meta não entregará webhooks de entrada. Informe novamente o token de acesso e salve de novo para inscrevê-la."
     },
@@ -2012,7 +2066,23 @@
     "rowTitlePlaceholder": "Título da linha",
     "rowDescriptionPlaceholder": "Descrição (opcional)",
     "addRow": "Adicionar linha",
-    "addSection": "Adicionar seção"
+    "addSection": "Adicionar seção",
+    "buttonType": "Tipo",
+    "buttonTypeReply": "Resposta rápida",
+    "buttonTypeUrl": "URL",
+    "urlPlaceholder": "https://example.com"
+  },
+  "MediaUpload": {
+    "uploading": "Enviando…",
+    "tooLarge": "O arquivo ultrapassa o limite de {limit} MB.",
+    "remove": "Remover anexo"
+  },
+  "MediaSend": {
+    "image": "Imagem",
+    "video": "Vídeo",
+    "attachImage": "Anexar uma imagem (opcional)",
+    "attachVideo": "Anexar um vídeo (opcional)",
+    "hint": "Enviado como imagem ou vídeo do WhatsApp; o texto da mensagem vira a legenda."
   },
   "DashboardShell": {
     "loading": "Carregando..."

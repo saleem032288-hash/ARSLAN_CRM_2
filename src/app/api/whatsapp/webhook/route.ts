@@ -42,6 +42,103 @@ function supabaseAdmin() {
   return _adminClient
 }
 
+/**
+ * Resolve the Meta App Secrets that OWN the identifiers referenced in
+ * this payload — the `phone_number_id` on message/status changes and
+ * the WABA id on template events — and return only those, decrypted.
+ *
+ * The webhook must NOT verify inbound signatures against the union of
+ * every account's app secret while choosing the target account from
+ * attacker-controlled payload fields. That combination lets any tenant
+ * who controls their own WABA sign a payload with THEIR secret and aim
+ * it at another account's phone_number_id: the union check accepts the
+ * signature (their own secret is in the set) and processing then
+ * attributes the delivery to the victim's config. Scoping the candidate
+ * secrets to the identifiers the payload itself references closes the
+ * gap — a delivery claiming a victim's number can only authenticate
+ * with the victim's own secret.
+ *
+ * Returns:
+ *   string[] — the distinct decrypted secrets of the owning rows. Empty
+ *     when the owning rows predate migration 043 (no app_secret set) so
+ *     `verifyMetaWebhookSignature` can still fall back to the legacy
+ *     `META_APP_SECRET` env var.
+ *   null     — the payload references identifiers with no matching
+ *     config row, or rows spanning MORE THAN ONE distinct secret. A
+ *     genuine Meta delivery is signed with a single app secret; a
+ *     payload that claims owners across different apps is a spoof.
+ *     Callers must reject.
+ */
+async function loadPayloadOwnerSecrets(
+  db: ReturnType<typeof supabaseAdmin>,
+  body: { entry?: WhatsAppWebhookEntry[] },
+): Promise<string[] | null> {
+  const phoneNumberIds: string[] = []
+  const wabaIds: string[] = []
+  const seenPhone = new Set<string>()
+  const seenWaba = new Set<string>()
+
+  for (const entry of body.entry ?? []) {
+    for (const change of entry.changes ?? []) {
+      if (isTemplateWebhookField(change.field)) {
+        // Template events identify the owner by WABA id (entry.id).
+        if (entry.id && !seenWaba.has(entry.id)) {
+          seenWaba.add(entry.id)
+          wabaIds.push(entry.id)
+        }
+        continue
+      }
+      const phoneNumberId = change.value?.metadata?.phone_number_id
+      if (phoneNumberId && !seenPhone.has(phoneNumberId)) {
+        seenPhone.add(phoneNumberId)
+        phoneNumberIds.push(phoneNumberId)
+      }
+    }
+  }
+
+  if (phoneNumberIds.length === 0 && wabaIds.length === 0) {
+    // Nothing to attribute the payload to — can't pick the secret the
+    // owner signed with, so can't trust it.
+    return null
+  }
+
+  try {
+    const orConds: string[] = []
+    if (phoneNumberIds.length > 0) {
+      orConds.push(`phone_number_id.in.(${phoneNumberIds.join(',')})`)
+    }
+    if (wabaIds.length > 0) {
+      orConds.push(`waba_id.in.(${wabaIds.join(',')})`)
+    }
+    const { data } = await db
+      .from('whatsapp_config')
+      .select('app_secret')
+      .or(orConds.join(','))
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rows = (data ?? []) as { app_secret: string | null }[]
+    if (rows.length === 0) return null
+
+    const secrets = new Set<string>()
+    for (const row of rows) {
+      if (!row.app_secret) continue
+      try {
+        const decrypted = decrypt(row.app_secret)
+        if (decrypted.length > 0) secrets.add(decrypted)
+      } catch {
+        // Corrupted or wrong-key — skip silently. The operator can
+        // re-save the connection to repair.
+      }
+    }
+
+    if (secrets.size > 1) return null
+    return [...secrets]
+  } catch {
+    // DB unreachable — fail closed rather than widen the candidate set.
+    return null
+  }
+}
+
 interface WhatsAppMessage {
   id: string
   /**
@@ -223,19 +320,30 @@ export async function POST(request: Request) {
   const rawBody = await request.text()
   const signature = request.headers.get('x-hub-signature-256')
 
-  if (!verifyMetaWebhookSignature(rawBody, signature)) {
-    // 401 (not 200) — we want Meta's delivery dashboard to show failures
-    // loudly if a misconfiguration causes signatures to stop matching,
-    // rather than silently eating events.
-    console.warn('[webhook] rejected request with invalid signature')
-    return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
-  }
-
   let body: { entry?: WhatsAppWebhookEntry[] }
   try {
     body = JSON.parse(rawBody)
   } catch {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
+  }
+
+  // Resolve the secrets of the configs that OWN this payload's
+  // phone_number_id / waba_id, then verify against only those. Verifying
+  // against every connections' secret would let a tenant who controls
+  // their own WABA sign a payload with their own secret and target a
+  // different account's number (see loadPayloadOwnerSecrets).
+  const ownerSecrets = await loadPayloadOwnerSecrets(supabaseAdmin(), body)
+  if (ownerSecrets === null) {
+    console.warn('[webhook] rejected request claiming an unknown or multi-owner identifier')
+    return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
+  }
+
+  if (!verifyMetaWebhookSignature(rawBody, signature, ownerSecrets)) {
+    // 401 (not 200) — we want Meta's delivery dashboard to show failures
+    // loudly if a misconfiguration causes signatures to stop matching,
+    // rather than silently eating events.
+    console.warn('[webhook] rejected request with invalid signature')
+    return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
   }
 
   // Process AFTER the response so we ack Meta within their ~20s timeout
@@ -339,7 +447,24 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
 
       const config = configRows[0]
 
-      const decryptedAccessToken = decrypt(config.access_token)
+      // A rotated / mismatched ENCRYPTION_KEY makes this throw. Left
+      // unguarded, the exception escapes processWebhook and the outer
+      // after() catch drops every remaining entry in the batch — one bad
+      // row silently costing unrelated inbound messages. Skip just this
+      // number and make the cause explicit so an operator can re-save the
+      // connection.
+      let decryptedAccessToken: string
+      try {
+        decryptedAccessToken = decrypt(config.access_token)
+      } catch (err) {
+        console.error(
+          '[webhook] could not decrypt access_token for phone_number_id',
+          phoneNumberId,
+          '— likely ENCRYPTION_KEY rotation/mismatch. Re-save the WhatsApp connection. Dropping this delivery.',
+          err instanceof Error ? err.message : err,
+        )
+        continue
+      }
 
       for (let i = 0; i < value.messages.length; i++) {
         const message = value.messages[i]

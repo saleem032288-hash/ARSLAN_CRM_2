@@ -296,6 +296,18 @@ export interface WhatsAppConfig {
   user_id: string;
   phone_number_id: string;
   waba_id?: string;
+  /**
+   * Numeric Meta App ID owning this connection (migration 043).
+   * Plaintext — not secret. Used for Resumable-Upload media-header
+   * templates and the WABA-subscription check.
+   */
+  app_id?: string;
+  /**
+   * Meta App Secret for this connection, AES-256-GCM-encrypted with
+   * ENCRYPTION_KEY (same scheme as access_token). Never rendered back
+   * to the browser as plaintext.
+   */
+  app_secret?: string;
   access_token: string;
   verify_token?: string;
   status: 'connected' | 'disconnected';
@@ -542,6 +554,18 @@ export type AutomationTriggerConfig =
 
 export interface SendMessageStepConfig {
   text: string;
+  /**
+   * Optional image/video attachment. When set, the step sends a WhatsApp
+   * image or video message and `text` becomes its caption (can be empty
+   * for a media-only message). Uploaded through the automation builder
+   * to the shared media bucket; `url` is the public URL Meta fetches at
+   * send time.
+   */
+  media?: {
+    type: 'image' | 'video';
+    url: string;
+    filename?: string;
+  };
 }
 
 /**
@@ -589,7 +613,7 @@ export interface CreateDealStepConfig {
 
 export interface WaitStepConfig {
   amount: number;
-  unit: 'minutes' | 'hours' | 'days';
+  unit: 'seconds' | 'minutes' | 'hours' | 'days';
 }
 
 export type ConditionSubject =
@@ -598,12 +622,32 @@ export type ConditionSubject =
   | 'message_content'
   | 'time_of_day';
 
-export interface ConditionStepConfig {
+/**
+ * How the comparison is made for subjects that support both modes
+ * (`message_content`: substring vs whole-message equality). Absent
+ * for legacy configs — defaults to 'contains' for `message_content`
+ * and to exact equality for `contact_field`.
+ */
+export type ConditionMatchMode = 'contains' | 'exact_match';
+
+export interface ConditionPredicate {
   subject: ConditionSubject;
   /** e.g. field name, tag id, substring, or "HH:mm-HH:mm" depending on subject */
   operand?: string;
-  /** For contact_field equals / message_content contains — comparison value */
+  /** For contact_field equality / message_content comparison — comparison value */
   value?: string;
+  /** Match mode for subjects that support contains vs exact equality. */
+  operator?: ConditionMatchMode;
+}
+
+export interface ConditionStepConfig extends ConditionPredicate {
+  /**
+   * Optional ordered ELSE IF predicates. Evaluated after the primary
+   * condition; first match wins. When none of the primary + else_if
+   * predicates match, the OTHER (`no`) branch runs. Absent for
+   * legacy two-branch conditions.
+   */
+  else_ifs?: ConditionPredicate[];
 }
 
 export interface SendWebhookStepConfig {
@@ -651,7 +695,9 @@ export interface AutomationStep {
   id: string;
   automation_id: string;
   parent_step_id?: string | null;
-  branch?: 'yes' | 'no' | null;
+  /** Branch label under the parent condition: 'yes' | 'no' | 'else_if_N'
+   *  (see migration 045). NULL for root steps. */
+  branch?: string | null;
   step_type: AutomationStepType;
   step_config: AutomationStepConfig;
   position: number;
@@ -682,7 +728,7 @@ export interface AutomationLog {
 // Quick replies — reusable snippets (migration 035)
 // ============================================================
 
-export type QuickReplyKind = 'text' | 'interactive';
+export type QuickReplyKind = 'text' | 'interactive' | 'media';
 
 export interface QuickReply {
   id: string;
@@ -692,10 +738,14 @@ export interface QuickReply {
   user_id: string;
   title: string;
   kind: QuickReplyKind;
-  /** Set when `kind === 'text'`. */
+  /** Set when `kind === 'text'` — and as the caption for `kind === 'media'`. */
   content_text?: string | null;
   /** Set when `kind === 'interactive'`. */
   interactive_payload?: InteractiveMessagePayload | null;
+  /** Set when `kind === 'media'` — one of image | video | document | audio. */
+  media_type?: string | null;
+  /** Public media URL Meta fetches — set when `kind === 'media'`. */
+  media_url?: string | null;
   created_at: string;
   updated_at: string;
 }

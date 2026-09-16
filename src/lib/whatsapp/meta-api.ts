@@ -903,10 +903,37 @@ export const INTERACTIVE_LIMITS = {
 } as const
 
 export interface InteractiveButton {
-  /** Stable id sent back in the webhook when tapped (≤ 256 chars). */
+  /** Stable id sent back in the webhook when tapped (≤ 256 chars).
+   *  Not used for `url` buttons, but kept required so both flavours share
+   *  the same shape (a URL button opens a link instead of replying). */
   id: string
   /** Visible label (≤ 20 chars per Meta). */
   title: string
+  /**
+   * `reply` (default) — customer taps and Meta delivers a webhook with the
+   * button id. `url` — opens an http(s) link in the customer's browser.
+   *
+   * Meta models URL buttons as a separate CTA-URL message type
+   * (`interactive.type: "cta_url"`): exactly ONE URL button per message
+   * and it cannot be combined with quick-reply buttons. Both the builder
+   * and this sender enforce that.
+   */
+  type?: 'reply' | 'url'
+  /** Absolute http(s) URL the customer's browser opens — required when
+   *  `type === 'url'`. */
+  url?: string
+}
+
+/** True when `value` parses as an absolute http(s) URL. Shared by the
+ *  pre-flight validator (interactive.ts) and this sender so both paths
+ *  reject the same malformed URLs. */
+export function isHttpUrl(value: string): boolean {
+  try {
+    const u = new URL(value)
+    return u.protocol === 'http:' || u.protocol === 'https:'
+  } catch {
+    return false
+  }
 }
 
 export interface SendInteractiveButtonsArgs {
@@ -947,8 +974,54 @@ export async function sendInteractiveButtons(
       `Interactive button message requires 1-${INTERACTIVE_LIMITS.maxButtons} buttons (got ${buttons.length}).`
     )
   }
+  const urlButtons = buttons.filter((b) => b.type === 'url')
+  const replyButtons = buttons.filter((b) => b.type !== 'url')
+  // Meta models "open a link" buttons as a separate CTA-URL message type
+  // (https://developers.facebook.com/docs/whatsapp/cloud-api/messages/
+  // interactive-cta-url-messages): exactly one URL button, and it cannot
+  // share a message with quick-reply buttons. Fail before the network
+  // call rather than mid-conversation.
+  if (urlButtons.length > 0) {
+    if (urlButtons.length !== 1 || replyButtons.length !== 0) {
+      throw new Error(
+        'A URL button message allows exactly one URL button; URL buttons cannot be combined with quick-reply buttons (Meta CTA URL).'
+      )
+    }
+    const urlBtn = urlButtons[0]
+    if (!urlBtn.title) throw new Error('Interactive URL button missing title.')
+    if (urlBtn.title.length > INTERACTIVE_LIMITS.buttonTitleMaxLength) {
+      throw new Error(
+        `Interactive URL button title "${urlBtn.title}" exceeds ${INTERACTIVE_LIMITS.buttonTitleMaxLength} chars.`
+      )
+    }
+    if (!isHttpUrl(urlBtn.url ?? '')) {
+      throw new Error('Interactive URL button needs a valid http(s) URL.')
+    }
+
+    const ctaInteractive: Record<string, unknown> = {
+      type: 'cta_url',
+      body: { text: bodyText },
+      action: {
+        name: 'cta_url',
+        parameters: { display_text: urlBtn.title, url: urlBtn.url },
+      },
+    }
+    if (headerText) ctaInteractive.header = { type: 'text', text: headerText }
+    if (footerText) ctaInteractive.footer = { text: footerText }
+
+    const ctaBody: Record<string, unknown> = {
+      messaging_product: 'whatsapp',
+      ...recipientFields(to),
+      type: 'interactive',
+      interactive: ctaInteractive,
+    }
+    if (contextMessageId) ctaBody.context = { message_id: contextMessageId }
+
+    return postInteractiveMessage(phoneNumberId, accessToken, ctaBody)
+  }
+
   const seenButtonIds = new Set<string>()
-  for (const btn of buttons) {
+  for (const btn of replyButtons) {
     if (!btn.id) throw new Error('Interactive button missing id.')
     // Duplicate button ids make the tapped-button webhook ambiguous —
     // Meta rejects them, and the pre-flight validator (interactive.ts)
@@ -969,7 +1042,7 @@ export async function sendInteractiveButtons(
     type: 'button',
     body: { text: bodyText },
     action: {
-      buttons: buttons.map((b) => ({
+      buttons: replyButtons.map((b) => ({
         type: 'reply',
         reply: { id: b.id, title: b.title },
       })),
@@ -986,6 +1059,17 @@ export async function sendInteractiveButtons(
   }
   if (contextMessageId) body.context = { message_id: contextMessageId }
 
+  return postInteractiveMessage(phoneNumberId, accessToken, body)
+}
+
+/** Shared POST to the WhatsApp Cloud API messages endpoint. Keeps the
+ *  interactive senders (reply buttons, CTA-URL, list) on one fetch path
+ *  so tests can stub it once. */
+async function postInteractiveMessage(
+  phoneNumberId: string,
+  accessToken: string,
+  body: Record<string, unknown>
+): Promise<MetaSendResult> {
   const url = `${META_API_BASE}/${phoneNumberId}/messages`
   const response = await fetch(url, {
     method: 'POST',

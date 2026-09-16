@@ -130,6 +130,9 @@ function slotColor(nodeType: NodeType, slotId: string, fallback: string) {
   if (nodeType === 'condition' && slotId === 'false') {
     return nodeColors('handoff').solid;
   }
+  if (nodeType === 'condition' && slotId.startsWith('else_if_')) {
+    return nodeColors('condition').solid;
+  }
   return fallback;
 }
 

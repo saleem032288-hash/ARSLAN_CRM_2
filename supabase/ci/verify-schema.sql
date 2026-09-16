@@ -75,6 +75,42 @@ BEGIN
       'messages.error_code/error_title/error_details are missing — migration 042 did not apply';
   END IF;
 
+  -- Realtime publication membership (046): the inbox subscribes to
+  -- postgres_changes on contact_tags for label badges, but a table
+  -- missing from the publication silently never emits events.
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables
+    WHERE pubname = 'supabase_realtime' AND tablename = 'contact_tags'
+  ) THEN
+    RAISE EXCEPTION
+      'contact_tags is not published on supabase_realtime — migration 046 did not apply';
+  END IF;
+
+  -- Grants are the classic "applies cleanly and does nothing" defect
+  -- (cf. issue #345 / 031). Assert both missing grants from 046 were
+  -- actually granted, or hardened instances silently break webhook
+  -- failure-recording and member presence.
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.role_routine_grants
+    WHERE routine_schema = 'public'
+      AND routine_name = 'record_webhook_failure'
+      AND grantee = 'service_role'
+      AND privilege_type = 'EXECUTE'
+  ) THEN
+    RAISE EXCEPTION
+      'record_webhook_failure is not granted to service_role — migration 046 did not apply';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.role_routine_grants
+    WHERE routine_schema = 'public'
+      AND routine_name = 'touch_presence'
+      AND grantee = 'authenticated'
+      AND privilege_type = 'EXECUTE'
+  ) THEN
+    RAISE EXCEPTION
+      'touch_presence is not granted to authenticated — migration 046 did not apply';
+  END IF;
+
   RAISE NOTICE 'schema verification passed';
 END
 $$;

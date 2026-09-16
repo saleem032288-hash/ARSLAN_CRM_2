@@ -6,6 +6,7 @@ const h = vi.hoisted(() => ({
   dispatchInboundToFlows: vi.fn(),
   dispatchInboundToAiReply: vi.fn(),
   dispatchWebhookEvent: vi.fn(),
+  verifyMetaWebhookSignature: vi.fn(() => true),
   state: {
     // Result the message upsert's .select() resolves to. A genuine insert
     // returns the row; a replayed delivery conflicts and returns [].
@@ -41,6 +42,13 @@ const h = vi.hoisted(() => ({
     broadcastRecipient: null as { id: string; status: string } | null,
     /** Patches applied to that broadcast_recipients row. */
     recipientUpdates: [] as Record<string, unknown>[],
+    /**
+     * Rows `loadPayloadOwnerSecrets` resolves for the payload's claimed
+     * phone_number_id / waba_id. Null deliberately simulates a DB miss.
+     */
+    ownerSecretRows: [{ app_secret: 'enc-app-secret' }] as
+      | { app_secret: string | null }[]
+      | null,
   },
 }))
 
@@ -70,6 +78,12 @@ vi.mock('@supabase/supabase-js', () => ({
                       mirror_inbound_media: h.state.mirrorInboundMedia,
                     },
                   ],
+                  error: null,
+                }),
+              // loadPayloadOwnerSecrets: select('app_secret').or(...)
+              or: () =>
+                Promise.resolve({
+                  data: h.state.ownerSecretRows,
                   error: null,
                 }),
             }),
@@ -241,7 +255,7 @@ vi.mock('@supabase/supabase-js', () => ({
 }))
 
 vi.mock('@/lib/whatsapp/encryption', () => ({
-  decrypt: () => 'plain-token',
+  decrypt: (v: string) => v,
   encrypt: (v: string) => v,
   isLegacyFormat: () => false,
 }))
@@ -259,7 +273,7 @@ vi.mock('@/lib/contacts/dedupe', () => ({
 }))
 
 vi.mock('@/lib/whatsapp/webhook-signature', () => ({
-  verifyMetaWebhookSignature: () => true,
+  verifyMetaWebhookSignature: h.verifyMetaWebhookSignature,
 }))
 vi.mock('@/lib/whatsapp/template-webhook', () => ({
   isTemplateWebhookField: (field: string) =>
@@ -379,6 +393,8 @@ beforeEach(() => {
   h.state.messageUpdates = []
   h.state.broadcastRecipient = null
   h.state.recipientUpdates = []
+  h.state.ownerSecretRows = [{ app_secret: 'enc-app-secret' }]
+  h.verifyMetaWebhookSignature.mockReturnValue(true)
   mockFindExistingContact.mockResolvedValue({
     id: 'contact-1',
     name: 'Ada',
@@ -1010,5 +1026,116 @@ describe('status webhook: failed statuses keep Meta\'s reason (#535)', () => {
     expect(h.state.recipientUpdates).toHaveLength(1)
     expect(h.state.recipientUpdates[0]).not.toHaveProperty('error_message')
     expect(h.state.recipientUpdates[0]).not.toHaveProperty('error_code')
+  })
+})
+
+// ============================================================
+// Cross-tenant signature scoping (security)
+//
+// The webhook previously verified the HMAC against the UNION of every
+// account's Meta App Secret. Because the target account is chosen from
+// the payload's own `phone_number_id`, any tenant who controlled a WABA
+// could sign a payload with THEIR secret and aim it at a DIFFERENT
+// account's number — the union check accepted it and the delivery was
+// processed into the victim's inbox. Verification is now scoped to the
+// secret(s) of the config(s) that own the identifiers the payload
+// references.
+// ============================================================
+
+describe('webhook POST: signature is scoped to the payload owner', () => {
+  it('verifies against the owning config secret, not every secret', async () => {
+    await runWebhook()
+
+    // decrypt() is mocked to return 'enc-app-secret' for the row's
+    // app_secret. Only that secret is offered to the verifier.
+    expect(h.verifyMetaWebhookSignature).toHaveBeenCalledWith(
+      expect.any(String),
+      'sha256=stub',
+      ['enc-app-secret'],
+    )
+  })
+
+  it('rejects a payload claiming a phone_number_id with no config row', async () => {
+    // No owner → no secret to authenticate against.
+    h.state.ownerSecretRows = null
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    let res: unknown
+    try {
+      res = await runWebhook()
+    } finally {
+      warn.mockRestore()
+    }
+
+    expect(
+      (res as { init?: { status?: number } }).init?.status,
+    ).toBe(401)
+    // Nothing was processed.
+    expect(h.state.upsertCalls).toHaveLength(0)
+    // The signature verifier was never even consulted with a widened set.
+    expect(h.verifyMetaWebhookSignature).not.toHaveBeenCalled()
+  })
+
+  it('rejects when the claimed identifiers resolve to multiple distinct app secrets', async () => {
+    // A single Meta delivery is signed with ONE app secret. Two distinct
+    // secrets means the payload claims owners across different apps —
+    // the shape of a spoof that smuggles its own number into the set.
+    h.state.ownerSecretRows = [
+      { app_secret: 'enc-app-secret' },
+      { app_secret: 'enc-other-secret' },
+    ]
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    let res: unknown
+    try {
+      res = await runWebhook()
+    } finally {
+      warn.mockRestore()
+    }
+
+    expect(
+      (res as { init?: { status?: number } }).init?.status,
+    ).toBe(401)
+    expect(h.state.upsertCalls).toHaveLength(0)
+    expect(h.verifyMetaWebhookSignature).not.toHaveBeenCalled()
+  })
+
+  it('still rejects a genuine signature mismatch for the owning config', async () => {
+    h.verifyMetaWebhookSignature.mockReturnValue(false)
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    let res: unknown
+    try {
+      res = await runWebhook()
+    } finally {
+      warn.mockRestore()
+    }
+
+    expect(
+      (res as { init?: { status?: number } }).init?.status,
+    ).toBe(401)
+    expect(h.state.upsertCalls).toHaveLength(0)
+  })
+
+  it('template events scope by the WABA id (no phone_number_id in the payload)', async () => {
+    const value = { event: 'APPROVED', message_template_id: '4242' }
+    const body = {
+      entry: [
+        { id: 'WABA-1', changes: [{ field: 'message_template_status_update', value }] },
+      ],
+    }
+    await POST({
+      text: async () => JSON.stringify(body),
+      headers: { get: () => 'sha256=stub' },
+    } as unknown as Request)
+    for (const cb of h.state.afterCallbacks) await cb()
+
+    expect(h.verifyMetaWebhookSignature).toHaveBeenCalledWith(
+      expect.any(String),
+      'sha256=stub',
+      ['enc-app-secret'],
+    )
+    const mockHandle = vi.mocked(handleTemplateWebhookChange)
+    expect(mockHandle).toHaveBeenCalledTimes(1)
   })
 })

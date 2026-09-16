@@ -8,12 +8,18 @@ import { NextRequest } from "next/server";
 //                      i.e. the freshly *rotated* auth token. The whole point
 //                      of the test is that these must survive onto whatever
 //                      response the middleware returns — including redirects.
+// `getUserError`     — when set, getUser() rejects, simulating a Supabase
+//                      outage. The middleware must fail closed, not 500.
+// `getUserCalls`     — counts how many times the network call was made, so
+//                      the no-cookie short-circuit is observable.
 let mockUser: { id: string } | null = null;
 let refreshedCookies: Array<{
   name: string;
   value: string;
   options: Record<string, unknown>;
 }> = [];
+let getUserError: Error | null = null;
+let getUserCalls = 0;
 
 vi.mock("@supabase/ssr", () => ({
   createServerClient: (
@@ -28,7 +34,9 @@ vi.mock("@supabase/ssr", () => ({
       // refreshed inside getUser(), which rotates the refresh token and
       // pushes the new cookies through setAll() before resolving.
       getUser: async () => {
+        getUserCalls++;
         if (refreshedCookies.length) opts.cookies.setAll(refreshedCookies);
+        if (getUserError) throw getUserError;
         return { data: { user: mockUser } };
       },
     },
@@ -43,9 +51,20 @@ beforeEach(() => {
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "anon-key";
   mockUser = null;
   refreshedCookies = [];
+  getUserError = null;
+  getUserCalls = 0;
 });
 
 afterEach(() => vi.clearAllMocks());
+
+const AUTH_COOKIE = "sb-test-auth-token=session";
+
+/** A request carrying a Supabase auth cookie (the normal signed-in case). */
+function authRequest(path: string) {
+  return new NextRequest(`https://app.test${path}`, {
+    headers: { cookie: AUTH_COOKIE },
+  });
+}
 
 const ROTATED = {
   name: "sb-test-auth-token",
@@ -58,9 +77,7 @@ describe("middleware — refreshed auth cookies survive redirects", () => {
     mockUser = { id: "user-1" };
     refreshedCookies = [ROTATED];
 
-    const res = await middleware(
-      new NextRequest("https://app.test/login"),
-    );
+    const res = await middleware(authRequest("/login"));
 
     // Redirect to /dashboard…
     expect(res.status).toBe(307);
@@ -77,9 +94,7 @@ describe("middleware — refreshed auth cookies survive redirects", () => {
     // clearing a dead session); those must not be dropped on the redirect.
     refreshedCookies = [{ ...ROTATED, value: "cleared" }];
 
-    const res = await middleware(
-      new NextRequest("https://app.test/dashboard"),
-    );
+    const res = await middleware(authRequest("/dashboard"));
 
     expect(res.status).toBe(307);
     expect(res.headers.get("location")).toContain("/login");
@@ -90,9 +105,7 @@ describe("middleware — refreshed auth cookies survive redirects", () => {
     mockUser = { id: "user-1" };
     refreshedCookies = [ROTATED];
 
-    const res = await middleware(
-      new NextRequest("https://app.test/login?invite=abc123"),
-    );
+    const res = await middleware(authRequest("/login?invite=abc123"));
 
     expect(res.headers.get("location")).toContain("/join/abc123");
     expect(res.cookies.get(ROTATED.name)?.value).toBe(ROTATED.value);
@@ -102,12 +115,38 @@ describe("middleware — refreshed auth cookies survive redirects", () => {
     mockUser = { id: "user-1" };
     refreshedCookies = [ROTATED];
 
-    const res = await middleware(
-      new NextRequest("https://app.test/dashboard"),
-    );
+    const res = await middleware(authRequest("/dashboard"));
 
     // No redirect — the normal NextResponse.next() already carries cookies.
     expect(res.headers.get("location")).toBeNull();
     expect(res.cookies.get(ROTATED.name)?.value).toBe(ROTATED.value);
+  });
+});
+
+describe("middleware — resilience", () => {
+  it("skips the getUser network call entirely when there is no auth cookie", async () => {
+    const res = await middleware(new NextRequest("https://app.test/login"));
+
+    // No session is possible without the cookie, so no round-trip.
+    expect(getUserCalls).toBe(0);
+    expect(res.headers.get("location")).toBeNull();
+  });
+
+  it("treats a Supabase outage as signed-out instead of throwing", async () => {
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    getUserError = new Error("fetch failed");
+
+    let res: Awaited<ReturnType<typeof middleware>>;
+    try {
+      res = await middleware(authRequest("/dashboard"));
+    } finally {
+      consoleError.mockRestore();
+    }
+
+    // Fail closed: protected route redirects to /login, no 500.
+    expect(res!.status).toBe(307);
+    expect(res!.headers.get("location")).toContain("/login");
   });
 });

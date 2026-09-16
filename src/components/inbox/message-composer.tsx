@@ -363,6 +363,23 @@ export function MessageComposer({
         openInteractiveBuilder(qr.interactive_payload);
         return;
       }
+      // Media quick replies carry a file already stored in Supabase —
+      // stage it directly without re-uploading. `path` is left empty
+      // so `deleteAccountMedia` on discard is a harmless no-op (the
+      // original shared object belongs to the quick reply, not the
+      // composer).
+      if (qr.kind === "media" && qr.media_url) {
+        removeStaged(draftRef.current?.path);
+        setDraft({
+          kind: (qr.media_type as ComposerMediaKind) ?? "video",
+          mediaUrl: qr.media_url,
+          path: "",
+          filename:
+            qr.media_url.split("/").pop() ?? `${qr.media_type ?? "attachment"}`,
+          caption: qr.content_text ?? "",
+        });
+        return;
+      }
       const body = qr.content_text ?? "";
       // Separate the snippet from any existing draft with a newline so the
       // words don't run together ("Thanks" + "we'll…" → "Thankswe'll…").
@@ -378,7 +395,7 @@ export function MessageComposer({
         }
       });
     },
-    [openInteractiveBuilder, adjustHeight],
+    [openInteractiveBuilder, adjustHeight, removeStaged],
   );
 
   // Upload a captured file to chat-media and stage it as a draft.

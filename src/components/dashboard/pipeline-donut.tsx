@@ -9,14 +9,17 @@ import { Skeleton } from './skeleton'
 interface PipelineDonutProps {
   data: PipelineDonutData | null
   loading: boolean
+  /** True when the last fetch failed, so we show an error instead of a skeleton. */
+  error?: boolean
   /** Account default currency for the totals. */
   currency: string
 }
 
 import { useTranslations } from 'next-intl'
 
-export function PipelineDonut({ data, loading, currency }: PipelineDonutProps) {
+export function PipelineDonut({ data, loading, error, currency }: PipelineDonutProps) {
   const t = useTranslations('Dashboard.pipelineDonut')
+  const tPage = useTranslations('Dashboard.page')
   return (
     <section className="flex h-full flex-col rounded-xl border border-border bg-card">
       <header className="border-b border-border px-5 py-4">
@@ -27,8 +30,10 @@ export function PipelineDonut({ data, loading, currency }: PipelineDonutProps) {
       </header>
 
       <div className="flex flex-1 flex-col p-5">
-        {loading || !data ? (
+        {loading ? (
           <Skeleton className="h-56 w-full" />
+        ) : error || !data ? (
+          <EmptyState title={tPage('loadError')} />
         ) : data.stages.length === 0 ? (
           <EmptyState
             icon={GitBranch}

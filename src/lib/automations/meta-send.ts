@@ -4,6 +4,11 @@ import {
   engineSendInteractiveButtons,
   engineSendInteractiveList,
 } from '@/lib/flows/meta-send'
+// Re-exported straight through: engineSendMedia owns the account-scoped
+// lookup, phone-variant retry, and `messages` insert with the media
+// payload — identical behaviour the automation engine needs for the
+// Send-Message-with-video step, so there's one implementation.
+export { engineSendMedia } from '@/lib/flows/meta-send'
 import { decrypt } from '@/lib/whatsapp/encryption'
 import {
   phoneVariants,

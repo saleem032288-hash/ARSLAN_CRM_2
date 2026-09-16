@@ -230,37 +230,55 @@ function ButtonsEditor({
       </label>
       <div className="flex flex-col gap-2">
         {buttons.map((b, i) => (
-          <div
-            key={i}
-            className="flex items-center gap-2 rounded-md border border-border bg-muted/40 p-2"
-          >
-            {advanced && (
-              <Input
-                value={b.id}
-                onChange={(e) => update(i, { id: slugify(e.target.value, `btn_${i + 1}`) })}
-                placeholder={t("idPlaceholder")}
-                className="w-28 bg-muted font-mono text-xs"
-              />
-            )}
-            <Input
-              value={b.title}
-              maxLength={INTERACTIVE_LIMITS.buttonTitleMaxLength}
-              onChange={(e) => update(i, { title: e.target.value })}
-              placeholder={t("buttonLabelPlaceholder")}
-              className="flex-1 bg-muted"
-            />
-            <span className="w-10 shrink-0 text-right text-[10px] text-muted-foreground">
-              {b.title.length}/{INTERACTIVE_LIMITS.buttonTitleMaxLength}
-            </span>
-            {buttons.length > 1 && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => remove(i)}
-                className="text-red-400 hover:bg-red-500/10 hover:text-red-300"
+          <div key={i} className="rounded-md border border-border bg-muted/40 p-2">
+            <div className="flex items-center gap-2">
+              {advanced && b.type !== "url" && (
+                <Input
+                  value={b.id}
+                  onChange={(e) => update(i, { id: slugify(e.target.value, `btn_${i + 1}`) })}
+                  placeholder={t("idPlaceholder")}
+                  className="w-28 bg-muted font-mono text-xs"
+                />
+              )}
+              <select
+                value={b.type ?? "reply"}
+                onChange={(e) =>
+                  update(i, { type: e.target.value === "url" ? "url" : "reply" })
+                }
+                className="h-9 w-28 shrink-0 rounded-md border border-border bg-muted px-1.5 text-xs text-foreground"
+                aria-label={t("buttonType")}
               >
-                <Trash2 className="h-3.5 w-3.5" />
-              </Button>
+                <option value="reply">{t("buttonTypeReply")}</option>
+                <option value="url">{t("buttonTypeUrl")}</option>
+              </select>
+              <Input
+                value={b.title}
+                maxLength={INTERACTIVE_LIMITS.buttonTitleMaxLength}
+                onChange={(e) => update(i, { title: e.target.value })}
+                placeholder={t("buttonLabelPlaceholder")}
+                className="flex-1 bg-muted"
+              />
+              <span className="w-10 shrink-0 text-right text-[10px] text-muted-foreground">
+                {b.title.length}/{INTERACTIVE_LIMITS.buttonTitleMaxLength}
+              </span>
+              {buttons.length > 1 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => remove(i)}
+                  className="text-red-400 hover:bg-red-500/10 hover:text-red-300"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              )}
+            </div>
+            {b.type === "url" && (
+              <Input
+                value={b.url ?? ""}
+                onChange={(e) => update(i, { url: e.target.value })}
+                placeholder={t("urlPlaceholder")}
+                className="mt-2 bg-muted"
+              />
             )}
           </div>
         ))}

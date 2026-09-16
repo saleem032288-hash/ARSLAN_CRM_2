@@ -83,7 +83,7 @@ in an afternoon and make yours.
 git clone https://github.com/<your-username>/wacrm.git
 cd wacrm
 npm install
-cp .env.local.example .env.local   # fill in Supabase + Meta creds
+cp .env.example .env.local   # fill in Supabase + Meta creds
 npm run dev
 ```
 

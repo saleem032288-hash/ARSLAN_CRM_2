@@ -139,6 +139,69 @@ describe("sendInteractiveButtons — validation", () => {
       },
     });
   });
+
+  it("sends the CTA-URL payload shape for a URL button", async () => {
+    let captured: { body: unknown } | null = null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => {
+        captured = { body: JSON.parse(String(init.body)) };
+        return new Response(
+          JSON.stringify({ messages: [{ id: "wamid.URL" }] }),
+          { status: 200 },
+        );
+      }),
+    );
+
+    const result = await sendInteractiveButtons({
+      ...BASE_ARGS,
+      headerText: "Visit us",
+      footerText: "Tap to open",
+      buttons: [
+        { id: "shop", title: "Shop now", type: "url", url: "https://example.com/shop" },
+      ],
+    });
+
+    expect(result).toEqual({ messageId: "wamid.URL" });
+    expect(captured).not.toBeNull();
+    expect(captured!.body).toMatchObject({
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to: "1234567890",
+      type: "interactive",
+      interactive: {
+        type: "cta_url",
+        body: { text: "Body text" },
+        header: { type: "text", text: "Visit us" },
+        footer: { text: "Tap to open" },
+        action: {
+          name: "cta_url",
+          parameters: { display_text: "Shop now", url: "https://example.com/shop" },
+        },
+      },
+    });
+  });
+
+  it("rejects URL buttons mixed with quick-reply buttons (Meta CTA URL caps)", async () => {
+    await expect(
+      sendInteractiveButtons({
+        ...BASE_ARGS,
+        buttons: [
+          { id: "a", title: "Reply" },
+          { id: "b", title: "Open", type: "url", url: "https://example.com" },
+        ],
+      }),
+    ).rejects.toThrow(/exactly one URL button/);
+  });
+
+  it("rejects a URL button with a malformed URL", async () => {
+    await expect(
+      sendInteractiveButtons({
+        ...BASE_ARGS,
+        buttons: [{ id: "b", title: "Open", type: "url", url: "not-a-url" }],
+      }),
+    ).rejects.toThrow(/valid http\(s\) URL/);
+  });
 });
 
 describe("sendInteractiveList — validation", () => {

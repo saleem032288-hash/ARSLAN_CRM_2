@@ -10,6 +10,8 @@ import { Skeleton } from './skeleton'
 interface ResponseTimeChartProps {
   data: ResponseTimeSummary | null
   loading: boolean
+  /** True when the last fetch failed, so we show an error instead of a skeleton. */
+  error?: boolean
   /** Minutes. Surfaced as a "target" pill in the header. The
    *  hand-rolled SVG version drew this as a horizontal dashed
    *  line on the chart; Tremor BarChart doesn't expose Recharts
@@ -30,9 +32,11 @@ const CATEGORY = 'Avg minutes'
 export function ResponseTimeChart({
   data,
   loading,
+  error,
   thresholdMinutes = 5,
 }: ResponseTimeChartProps) {
   const t = useTranslations('Dashboard.responseTimeChart')
+  const tPage = useTranslations('Dashboard.page')
   const hasData = data?.buckets.some((b) => b.avgMinutes != null) ?? false
 
   // Map buckets → Tremor rows. Null `avgMinutes` (no samples)
@@ -81,8 +85,10 @@ export function ResponseTimeChart({
       </header>
 
       <div className="p-5">
-        {loading || !data ? (
+        {loading ? (
           <Skeleton className="h-[260px] w-full" />
+        ) : error || !data ? (
+          <EmptyState title={tPage('loadError')} />
         ) : !hasData ? (
           <EmptyState
             icon={Clock}

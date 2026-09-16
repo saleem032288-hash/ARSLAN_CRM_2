@@ -23,16 +23,21 @@
  * Structural minimum the walkers need. Generic in the concrete node
  * type so callers keep their own richer step type end-to-end —
  * `BuilderStep` in the builder satisfies `TreeStep<BuilderStep>`.
+ *
+ * A condition step carries its branch buckets under `branches`, keyed
+ * by branch label: 'yes' (IF), `else_if_<n>` (ELSE IF), 'no' (OTHER,
+ * legacy name for the "else" bucket). Non-condition steps have no
+ * `branches` at all.
  */
 export interface TreeStep<T> {
   cid: string
-  branches?: { yes: T[]; no: T[] }
+  branches?: Record<string, T[]>
 }
 
 /** Which bucket new children go into, for insertion. */
 export type ParentScope =
   | { kind: "root" }
-  | { kind: "branch"; parentCid: string; branch: "yes" | "no" }
+  | { kind: "branch"; parentCid: string; branch: string }
 
 /**
  * One level of addressing: which bucket, and the index within it. The
@@ -41,7 +46,7 @@ export type ParentScope =
  */
 export type StepMarker =
   | { kind: "root"; index: number }
-  | { kind: "branch"; branch: "yes" | "no"; index: number }
+  | { kind: "branch"; branch: string; index: number }
 
 export type StepPath = StepMarker[]
 
@@ -92,20 +97,22 @@ export function insertAt<T extends TreeStep<T>>(
   return steps.map((step) => {
     if (!step.branches) return step
     if (step.cid === scope.parentCid) {
-      const bucket = [...step.branches[scope.branch]]
+      const bucket = [...(step.branches[scope.branch] ?? [])]
       bucket.splice(index, 0, node)
       return {
         ...step,
         branches: { ...step.branches, [scope.branch]: bucket },
       }
     }
-    // Not this condition — keep looking inside both of its branches.
+    // Not this condition — keep looking inside every one of its branches.
     return {
       ...step,
-      branches: {
-        yes: insertAt(step.branches.yes, scope, index, node),
-        no: insertAt(step.branches.no, scope, index, node),
-      },
+      branches: Object.fromEntries(
+        Object.entries(step.branches).map(([label, bucket]) => [
+          label,
+          insertAt(bucket, scope, index, node),
+        ]),
+      ),
     }
   })
 }
