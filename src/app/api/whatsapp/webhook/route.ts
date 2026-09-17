@@ -139,6 +139,41 @@ async function loadPayloadOwnerSecrets(
   }
 }
 
+/**
+ * Collect the identifiers that attribute this payload to a config row:
+ * phone_number_ids from message/status changes, WABA ids from template
+ * events. Mirrors loadPayloadOwnerSecrets' attribution logic — same
+ * shape, different purpose: this feeds the last_webhook_at heartbeat
+ * (migration 047), not signature verification.
+ */
+function collectWebhookOwnerIds(body: {
+  entry?: WhatsAppWebhookEntry[]
+}): { phoneIds: string[]; wabaIds: string[] } {
+  const phoneIds: string[] = []
+  const wabaIds: string[] = []
+  const seenPhone = new Set<string>()
+  const seenWaba = new Set<string>()
+
+  for (const entry of body.entry ?? []) {
+    for (const change of entry.changes ?? []) {
+      if (isTemplateWebhookField(change.field)) {
+        if (entry.id && !seenWaba.has(entry.id)) {
+          seenWaba.add(entry.id)
+          wabaIds.push(entry.id)
+        }
+        continue
+      }
+      const phoneNumberId = change.value?.metadata?.phone_number_id
+      if (phoneNumberId && !seenPhone.has(phoneNumberId)) {
+        seenPhone.add(phoneNumberId)
+        phoneIds.push(phoneNumberId)
+      }
+    }
+  }
+
+  return { phoneIds, wabaIds }
+}
+
 interface WhatsAppMessage {
   id: string
   /**
@@ -344,6 +379,41 @@ export async function POST(request: Request) {
     // rather than silently eating events.
     console.warn('[webhook] rejected request with invalid signature')
     return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
+  }
+
+  // Heartbeat (migration 047): record that Meta just successfully
+  // reached us for this connection. Stamped BEFORE processing and
+  // fire-and-forget so it can never gate the 200 OK or the message
+  // flow — a dropped heartbeat degrades to yesterday's behavior, not
+  // a broken webhook. This is the only signal that answers "is Meta
+  // still delivering?": registered_at / subscribed_apps_at prove WE
+  // wired Meta correctly, but a 'messages' field subscription Meta
+  // silently drops (app migration, relinked WABA) leaves those green
+  // while the inbox starves. A delivery with zero processable
+  // messages (status-only, template-only) still proves the pipe is
+  // open, so the stamp happens regardless of payload contents.
+  const { phoneIds: hbPhoneIds, wabaIds: hbWabaIds } =
+    collectWebhookOwnerIds(body)
+  if (hbPhoneIds.length > 0 || hbWabaIds.length > 0) {
+    const hbConds: string[] = []
+    if (hbPhoneIds.length > 0) {
+      hbConds.push(`phone_number_id.in.(${hbPhoneIds.join(',')})`)
+    }
+    if (hbWabaIds.length > 0) {
+      hbConds.push(`waba_id.in.(${hbWabaIds.join(',')})`)
+    }
+    void supabaseAdmin()
+      .from('whatsapp_config')
+      .update({ last_webhook_at: new Date().toISOString() })
+      .or(hbConds.join(','))
+      .then(({ error }: { error: unknown }) => {
+        if (error) {
+          console.warn(
+            '[webhook] last_webhook_at heartbeat update failed:',
+            (error as { message?: string })?.message ?? error,
+          )
+        }
+      })
   }
 
   // Process AFTER the response so we ack Meta within their ~20s timeout

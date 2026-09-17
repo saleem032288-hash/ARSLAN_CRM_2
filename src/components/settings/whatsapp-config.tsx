@@ -139,12 +139,36 @@ export function WhatsAppConfig() {
     live: boolean;
     checks: Record<string, boolean | null>;
     errors?: string[];
+    warnings?: string[];
+    heartbeat?: {
+      last_webhook_at: string | null;
+      age_hours: number | null;
+      fresh: boolean;
+    };
     last_registration_error?: string | null;
     registered_at?: string | null;
     subscribed_apps_at?: string | null;
   };
   const [registrationProbe, setRegistrationProbe] =
     useState<RegistrationProbe | null>(null);
+
+  // Migration 047: "is Meta still delivering?" The credential columns
+  // above can all be green while a dropped 'messages' field
+  // subscription starves the inbox — the heartbeat is the only signal
+  // that catches that. Stale threshold (24h) mirrors the diagnostic
+  // endpoint's warning.
+  const lastWebhookAt = config?.last_webhook_at ?? null;
+  const heartbeatAgeHours = lastWebhookAt
+    ? (Date.now() - new Date(lastWebhookAt).getTime()) / 3_600_000
+    : null;
+  const heartbeatFresh =
+    heartbeatAgeHours != null && heartbeatAgeHours <= 24;
+  const showHeartbeatBanner =
+    !!config && lastWebhookAt == null ? true : !!config && !heartbeatFresh;
+  const heartbeatLabel =
+    lastWebhookAt == null
+      ? t('heartbeatNever')
+      : `${t('heartbeatLastReceived')} ${new Date(lastWebhookAt).toLocaleString()}`;
 
   const webhookUrl =
     typeof window !== 'undefined'
@@ -170,7 +194,7 @@ export function WhatsAppConfig() {
       const { data, error } = await supabase
         .from('whatsapp_config')
         .select(
-          'id, account_id, user_id, phone_number_id, waba_id, app_id, status, connected_at, registered_at, subscribed_apps_at, last_registration_error, mirror_inbound_media, created_at, updated_at'
+          'id, account_id, user_id, phone_number_id, waba_id, app_id, status, connected_at, registered_at, subscribed_apps_at, last_webhook_at, last_registration_error, mirror_inbound_media, created_at, updated_at'
         )
         .eq('account_id', acctId)
         .maybeSingle();
@@ -551,6 +575,19 @@ export function WhatsAppConfig() {
 
   const showResetBanner = resetReason === 'token_corrupted';
 
+  // Human string for the diagnostic's heartbeat line (migration 047):
+  // "3h ago" / "never". Kept small — the banner below carries the
+  // actionable copy; this is just the number next to the icon.
+  const renderHeartbeatAge = (
+    hb: NonNullable<RegistrationProbe['heartbeat']>,
+  ): string => {
+    if (hb.last_webhook_at == null) return t('heartbeatNever');
+    const h = hb.age_hours ?? 0;
+    if (h < 1) return t('heartbeatMinutesAgo', { m: Math.max(1, Math.round(h * 60)) });
+    if (h < 36) return t('heartbeatHoursAgo', { h: Math.round(h) });
+    return t('heartbeatDaysAgo', { d: Math.round(h / 24) });
+  };
+
   // Step + code + trace id in small muted text, so a user can quote
   // them to Meta support (issue #505). The step names are wire values
   // from the route, shown verbatim.
@@ -779,8 +816,45 @@ export function WhatsAppConfig() {
                     ))}
                   </ul>
                 )}
+                {registrationProbe.heartbeat && (
+                  <p className="flex items-center gap-1.5 text-muted-foreground">
+                    {registrationProbe.heartbeat.fresh ? (
+                      <CheckCircle2 className="size-3 text-emerald-400 shrink-0" />
+                    ) : (
+                      <AlertTriangle className="size-3 text-amber-400 shrink-0" />
+                    )}
+                    <code className="text-muted-foreground">last_webhook_at</code>
+                    <span>
+                      {t('heartbeatAge', {
+                        age: renderHeartbeatAge(registrationProbe.heartbeat),
+                      })}
+                    </span>
+                  </p>
+                )}
               </div>
             )}
+          </Alert>
+        )}
+
+        {/* Webhook heartbeat (migration 047) — "is Meta actually
+            delivering?" Credentials can be valid and the number
+            registered while a dropped 'messages' field subscription
+            starves the inbox silently; the heartbeat is the only
+            signal that catches that. Stale = >24h without an
+            authenticated delivery; NULL = never delivered. */}
+        {config && showHeartbeatBanner && (
+          <Alert className="bg-amber-950/30 border-amber-700/50">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="size-5 text-amber-400 mt-0.5 shrink-0" />
+              <div className="flex-1">
+                <AlertTitle className="text-amber-200 mb-1">
+                  {t('heartbeatTitle')}
+                </AlertTitle>
+                <AlertDescription className="text-amber-100/80 text-sm">
+                  {heartbeatLabel}. {t('heartbeatStaleHint')}
+                </AlertDescription>
+              </div>
+            </div>
           </Alert>
         )}
 

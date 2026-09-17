@@ -320,6 +320,15 @@ export interface WhatsAppConfig {
   registered_at?: string;
   /** Set when POST /{waba_id}/subscribed_apps last succeeded. */
   subscribed_apps_at?: string;
+  /**
+   * Heartbeat: stamped by the inbound webhook route on every
+   * authenticated Meta delivery (migration 047). The only signal that
+   * answers "is Meta still delivering?" — registered_at proves we wired
+   * Meta correctly, but a silently dropped 'messages' field
+   * subscription leaves that green while the inbox starves. NULL means
+   * no authenticated delivery has been observed yet.
+   */
+  last_webhook_at?: string;
   /** Last error from /register; cleared on success. */
   last_registration_error?: string;
   /**

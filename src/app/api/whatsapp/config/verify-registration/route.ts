@@ -97,6 +97,29 @@ export async function GET() {
     waba_subscribed_to_app: null,
     locally_marked_registered: config.registered_at != null,
   }
+
+  // Heartbeat freshness (migration 047). registered_at proves WE wired
+  // Meta correctly; last_webhook_at is the only column that answers
+  // "is Meta still delivering?" — a silently dropped 'messages' field
+  // subscription leaves every credential check green while the inbox
+  // starves, and the only symptom is this timestamp going stale.
+  const lastWebhookAt = (config as { last_webhook_at?: string | null })
+    .last_webhook_at
+  const lastWebhookAgeHours =
+    lastWebhookAt != null
+      ? (Date.now() - new Date(lastWebhookAt).getTime()) / 3_600_000
+      : null
+  const heartbeatFresh = lastWebhookAgeHours != null && lastWebhookAgeHours <= 24
+  const warnings: string[] = []
+  if (lastWebhookAt == null) {
+    warnings.push(
+      'No webhook delivery has ever been authenticated for this connection — Meta has never reached the webhook endpoint. Check the webhook URL and the app-level "messages" field subscription.',
+    )
+  } else if (!heartbeatFresh) {
+    warnings.push(
+      `Last authenticated webhook delivery was ${Math.floor(lastWebhookAgeHours ?? 0)}h ago — Meta has stopped delivering events. Credentials can still be valid; re-subscribe the WABA and the "messages" field (Settings → Verify with Meta, or the Meta App Dashboard → WhatsApp → Configuration).`,
+    )
+  }
   const errors: string[] = []
 
   // 1. Phone metadata
@@ -149,6 +172,14 @@ export async function GET() {
     live,
     checks,
     errors,
+    // Non-fatal: the pipe may look fully wired but be silently dead.
+    // The UI surfaces this as a warning banner under the diagnostic.
+    warnings,
+    heartbeat: {
+      last_webhook_at: lastWebhookAt ?? null,
+      age_hours: lastWebhookAgeHours,
+      fresh: heartbeatFresh,
+    },
     last_registration_error: config.last_registration_error ?? null,
     registered_at: config.registered_at ?? null,
     subscribed_apps_at: config.subscribed_apps_at ?? null,

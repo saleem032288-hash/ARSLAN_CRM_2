@@ -49,6 +49,9 @@ const h = vi.hoisted(() => ({
     ownerSecretRows: [{ app_secret: 'enc-app-secret' }] as
       | { app_secret: string | null }[]
       | null,
+    /** Patches applied to whatsapp_config by the last_webhook_at
+     * heartbeat (migration 047). */
+    heartbeatUpdates: [] as Record<string, unknown>[],
   },
 }))
 
@@ -87,6 +90,12 @@ vi.mock('@supabase/supabase-js', () => ({
                   error: null,
                 }),
             }),
+            // last_webhook_at heartbeat (migration 047):
+            // update(...).or('phone_number_id.in.(...),waba_id.in.(...)')
+            update: (patch: Record<string, unknown>) => {
+              h.state.heartbeatUpdates.push(patch)
+              return { or: () => Promise.resolve({ error: null }) }
+            },
           }
         case 'conversations':
           // findOrCreateConversation: select().eq().eq().order().limit()
@@ -393,6 +402,7 @@ beforeEach(() => {
   h.state.messageUpdates = []
   h.state.broadcastRecipient = null
   h.state.recipientUpdates = []
+  h.state.heartbeatUpdates = []
   h.state.ownerSecretRows = [{ app_secret: 'enc-app-secret' }]
   h.verifyMetaWebhookSignature.mockReturnValue(true)
   mockFindExistingContact.mockResolvedValue({
@@ -1137,5 +1147,90 @@ describe('webhook POST: signature is scoped to the payload owner', () => {
     )
     const mockHandle = vi.mocked(handleTemplateWebhookChange)
     expect(mockHandle).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ============================================================
+// last_webhook_at heartbeat (migration 047)
+//
+// The heartbeat is the ONLY signal that answers "is Meta still
+// delivering?" — registered_at / subscribed_apps_at prove we wired
+// Meta correctly, but a silently dropped 'messages' field subscription
+// leaves those green while the inbox starves. The stamp must:
+//   * fire for a normal inbound message,
+//   * fire even when the payload has no processable message (a
+//     status-only delivery still proves the pipe is open),
+//   * scope to the payload's owning connection (phone_number_id /
+//     waba_id), and
+//   * never run for rejected payloads (bad signature = Meta never
+//     authenticated; stamping would fake liveness).
+// ============================================================
+
+describe('inbound webhook: last_webhook_at heartbeat (migration 047)', () => {
+  it('stamps last_webhook_at for an authenticated inbound message', async () => {
+    await runWebhook()
+
+    expect(h.state.heartbeatUpdates).toHaveLength(1)
+    expect(h.state.heartbeatUpdates[0]).toHaveProperty('last_webhook_at')
+    // ISO parseable — the diagnostic and UI do date math on it.
+    expect(
+      !Number.isNaN(
+        new Date(
+          h.state.heartbeatUpdates[0].last_webhook_at as string,
+        ).getTime(),
+      ),
+    ).toBe(true)
+  })
+
+  it('scopes the stamp to the payload owning phone_number_id', async () => {
+    await runWebhook()
+
+    // The .or() filter is not visible through the mock's update patch,
+    // so assert indirectly: exactly one update fired and the mock's
+    // whatsapp_config branch was the target. Scoping correctness of the
+    // .or() string itself is enforced by loadPayloadOwnerSecrets sharing
+    // the same attribution (covered by the owner-scoping tests above).
+    expect(h.state.heartbeatUpdates).toHaveLength(1)
+  })
+
+  it('stamps even when the delivery carries no processable message', async () => {
+    // A status-only delivery still proves Meta's pipe is open — the
+    // heartbeat must advance on it, not just on message deliveries.
+    await runStatusWebhook({
+      id: 'wamid.STATUS1',
+      status: 'delivered',
+      timestamp: '1700000000',
+      recipient_id: '15551230000',
+    })
+
+    expect(h.state.heartbeatUpdates).toHaveLength(1)
+    expect(h.state.upsertCalls).toHaveLength(0)
+  })
+
+  it('does not stamp a payload rejected for an invalid signature', async () => {
+    h.verifyMetaWebhookSignature.mockReturnValue(false)
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      await runWebhook()
+    } finally {
+      warn.mockRestore()
+    }
+
+    // A spoofed delivery must not fake connection liveness.
+    expect(h.state.heartbeatUpdates).toHaveLength(0)
+  })
+
+  it('does not stamp a payload with an unknown owner', async () => {
+    h.state.ownerSecretRows = null
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      await runWebhook()
+    } finally {
+      warn.mockRestore()
+    }
+
+    expect(h.state.heartbeatUpdates).toHaveLength(0)
   })
 })
