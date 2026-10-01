@@ -102,7 +102,10 @@ export async function POST(request: Request) {
       ctx.supabase,
       ctx.accountId,
       to,
-      typeof body.name === 'string' ? body.name : null
+      typeof body.name === 'string' ? body.name : null,
+      // Optional: send from a specific connection. Omit to use the
+      // account's default connection (pre-multi-connection behaviour).
+      typeof body.connection_id === 'string' ? body.connection_id : null
     );
 
     const result = await sendMessageToConversation(

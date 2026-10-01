@@ -51,13 +51,17 @@ function makeSupabaseMock() {
           // its contact); otherwise fall back to the canned existing row.
           return { data: createdConversation ?? existingConversation, error: null }
         case 'whatsapp_config':
+          // The connection resolver lists rows (multi-connection), so the
+          // terminal select resolves to an array even for one row.
           return {
-            data: {
-              id: 'cfg-1',
-              account_id: 'acct-1',
-              phone_number_id: 'PNID-1',
-              access_token: 'enc-token',
-            },
+            data: [
+              {
+                id: 'cfg-1',
+                account_id: 'acct-1',
+                phone_number_id: 'PNID-1',
+                access_token: 'enc-token',
+              },
+            ],
             error: null,
           }
         case 'message_templates':

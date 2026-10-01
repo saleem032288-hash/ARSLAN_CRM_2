@@ -61,14 +61,15 @@ function makeDb(rpcResult: { data: unknown; error: unknown }) {
   const database = {
     from(table: string) {
       if (table === 'whatsapp_config') {
+        const configRow = { phone_number_id: 'pn-1', access_token: 'enc' };
         return {
           select: () => ({
             eq: () => ({
+              // Connection resolver lists rows (multi-connection).
+              order: () =>
+                Promise.resolve({ data: [configRow], error: null }),
               single: () =>
-                Promise.resolve({
-                  data: { phone_number_id: 'pn-1', access_token: 'enc' },
-                  error: null,
-                }),
+                Promise.resolve({ data: configRow, error: null }),
             }),
           }),
         };

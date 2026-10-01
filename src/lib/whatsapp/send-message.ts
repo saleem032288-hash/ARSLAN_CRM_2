@@ -41,6 +41,7 @@ import {
   isRecipientNotAllowedError,
 } from '@/lib/whatsapp/phone-utils';
 import { resolveContactSendTarget } from '@/lib/whatsapp/wa-identity';
+import { resolveConnectionForConversation } from '@/lib/whatsapp/connections';
 import type { MessageTemplate } from '@/types';
 import {
   resolveTemplateRow,
@@ -254,14 +255,17 @@ export async function sendMessageToConversation(
   const hasValidPhone = resolvedTarget.isPhone;
   const sanitizedPhone = hasValidPhone ? sendTarget : '';
 
-  // WhatsApp config, account-scoped.
-  const { data: config, error: configError } = await db
-    .from('whatsapp_config')
-    .select('*')
-    .eq('account_id', accountId)
-    .single();
+  // Resolve THIS conversation's WhatsApp connection — replies must go
+  // out on the number the customer actually contacted (task #15), not
+  // an arbitrary one. Legacy/unlinked conversations fall back to the
+  // account's default connection inside the resolver.
+  const config = await resolveConnectionForConversation(
+    db,
+    accountId,
+    conversationId
+  );
 
-  if (configError || !config) {
+  if (!config) {
     throw new SendMessageError(
       'whatsapp_not_configured',
       'WhatsApp not configured. Please set up your WhatsApp integration first.',
@@ -489,6 +493,7 @@ export async function sendMessageToConversation(
     .from('messages')
     .insert({
       conversation_id: conversationId,
+      whatsapp_connection_id: config.id,
       sender_type: 'agent',
       content_type: messageType,
       content_text: persistedText,

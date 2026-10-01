@@ -74,10 +74,15 @@ export async function resolveAuditUserId(
   db: SupabaseClient,
   accountId: string
 ): Promise<string> {
+  // Multiple connections per account are now possible, so `.maybeSingle()`
+  // (which errors on ≥2 rows) can't be used here. The audit user is the
+  // same for every connection (the admin who saved them), so take any one.
   const { data: config } = await db
     .from('whatsapp_config')
     .select('user_id')
     .eq('account_id', accountId)
+    .order('created_at', { ascending: true })
+    .limit(1)
     .maybeSingle();
   const configOwner = config?.user_id as string | undefined;
   if (configOwner) return configOwner;

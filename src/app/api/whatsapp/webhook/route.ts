@@ -546,6 +546,10 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
           // Tenancy — drives every contact / conversation lookup
           // and the engines' active-row dispatch.
           config.account_id,
+          // The exact connection (number) this delivery arrived on.
+          // Drives the per-connection conversation split and is
+          // stamped on every message row.
+          config.id,
           // Audit / sender-of-record — used as the user_id on row
           // inserts that need it for NOT NULL FK compliance. Always
           // the admin who saved the WhatsApp config.
@@ -852,6 +856,11 @@ async function processMessage(
   // contact / conversation / message row created downstream is
   // stamped with this so any member of the account can see it.
   accountId: string,
+  // The exact connection (number) the delivery arrived on. Scopes the
+  // conversation lookup so the same customer messaging two of our
+  // numbers gets two independent threads, and is stamped on the
+  // conversation + message rows for conversation-aware replies.
+  connectionId: string,
   // Sender-of-record for inserts that need a NOT NULL user_id FK
   // (contacts, conversations). Always the admin who saved the
   // WhatsApp config; the choice is arbitrary post-017 but stable.
@@ -887,6 +896,7 @@ async function processMessage(
   // Find or create conversation
   const convResult = await findOrCreateConversation(
     accountId,
+    connectionId,
     configOwnerUserId,
     contactRecord.id
   )
@@ -983,6 +993,9 @@ async function processMessage(
     .upsert(
       {
         conversation_id: conversation.id,
+        // Stamp the owning connection so a later reply is routed back
+        // through the number the customer actually contacted.
+        whatsapp_connection_id: connectionId,
         sender_type: 'customer',
         content_type: contentType,
         content_text: contentText,
@@ -1572,6 +1585,7 @@ async function findOrCreateContact(
 
 async function findOrCreateConversation(
   accountId: string,
+  connectionId: string,
   configOwnerUserId: string,
   contactId: string,
 ) {
@@ -1593,6 +1607,7 @@ async function findOrCreateConversation(
     .select('*')
     .eq('account_id', accountId)
     .eq('contact_id', contactId)
+    .eq('whatsapp_connection_id', connectionId)
     .order('created_at', { ascending: true })
     .limit(1)
 
@@ -1613,6 +1628,7 @@ async function findOrCreateConversation(
       account_id: accountId,
       user_id: configOwnerUserId,
       contact_id: contactId,
+      whatsapp_connection_id: connectionId,
     })
     .select()
     .single()
@@ -1628,6 +1644,7 @@ async function findOrCreateConversation(
         .select('*')
         .eq('account_id', accountId)
         .eq('contact_id', contactId)
+        .eq('whatsapp_connection_id', connectionId)
         .order('created_at', { ascending: true })
         .limit(1)
       if (raced && raced.length > 0) {

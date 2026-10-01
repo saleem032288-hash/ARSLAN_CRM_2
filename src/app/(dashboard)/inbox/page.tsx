@@ -221,13 +221,18 @@ function InboxPageInner() {
         return;
       }
 
+      // An account can now have several WhatsApp numbers (migration
+      // 048), so fetch all statuses and consider the inbox "connected"
+      // if at least one number is live. (`.maybeSingle()` would error
+      // on multiple rows and falsely show the banner.)
       const { data } = await supabase
         .from("whatsapp_config")
         .select("status")
-        .eq("account_id", accountId)
-        .maybeSingle();
+        .eq("account_id", accountId);
 
-      setWhatsappConnected(data?.status === "connected");
+      setWhatsappConnected(
+        (data ?? []).some((row) => row.status === "connected")
+      );
     };
 
     checkConnection();

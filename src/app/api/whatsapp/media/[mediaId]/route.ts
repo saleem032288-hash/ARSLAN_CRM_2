@@ -2,6 +2,10 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
 import { decrypt } from '@/lib/whatsapp/encryption'
+import {
+  resolveConnectionById,
+  resolveDefaultConnection,
+} from '@/lib/whatsapp/connections'
 
 export async function GET(
   request: Request,
@@ -48,14 +52,17 @@ export async function GET(
       )
     }
 
-    // Fetch and decrypt WhatsApp config
-    const { data: config, error: configError } = await supabase
-      .from('whatsapp_config')
-      .select('*')
-      .eq('account_id', accountId)
-      .single()
+    // Fetch and decrypt WhatsApp config. Media IDs are scoped to the
+    // access token that fetched them, so prefer an explicit
+    // `?connection_id=` (the inbox passes the thread's number) and fall
+    // back to the account default.
+    const requestedConnectionId =
+      new URL(request.url).searchParams.get('connection_id')
+    const config = requestedConnectionId
+      ? await resolveConnectionById(supabase, accountId, requestedConnectionId)
+      : await resolveDefaultConnection(supabase, accountId)
 
-    if (configError || !config) {
+    if (!config) {
       return NextResponse.json(
         { error: 'WhatsApp not configured' },
         { status: 400 }

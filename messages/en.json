@@ -148,6 +148,8 @@
       "tags": "Tags",
       "company": "Company",
       "allCompanies": "All companies",
+      "allNumbers": "All numbers",
+      "number": "Number",
       "clearAll": "Clear all",
       "noConversations": "No conversations found",
       "noMessagesYet": "No messages yet",

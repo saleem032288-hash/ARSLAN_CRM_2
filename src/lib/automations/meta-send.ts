@@ -15,6 +15,7 @@ import {
   isRecipientNotAllowedError,
 } from '@/lib/whatsapp/phone-utils'
 import { resolveContactSendTarget } from '@/lib/whatsapp/wa-identity'
+import { resolveConnectionForConversation } from '@/lib/whatsapp/connections'
 import {
   resolveTemplateRow,
   templateContentText,
@@ -144,12 +145,12 @@ async function sendViaMeta(input: SendInput): Promise<{ whatsapp_message_id: str
   }
   const sanitized = sendTarget.target
 
-  const { data: config, error: configErr } = await db
-    .from('whatsapp_config')
-    .select('*')
-    .eq('account_id', input.accountId)
-    .single()
-  if (configErr || !config) {
+  const config = await resolveConnectionForConversation(
+    db,
+    input.accountId,
+    input.conversationId,
+  )
+  if (!config) {
     throw new Error('WhatsApp not configured for this account')
   }
 
@@ -232,6 +233,7 @@ async function sendViaMeta(input: SendInput): Promise<{ whatsapp_message_id: str
 
   const { error: msgErr } = await db.from('messages').insert({
     conversation_id: input.conversationId,
+    whatsapp_connection_id: config.id,
     sender_type: 'bot',
     content_type,
     content_text,

@@ -172,6 +172,14 @@ export interface Conversation {
   id: string;
   user_id: string;
   contact_id: string;
+  /**
+   * Which WhatsApp number/connection this conversation belongs to
+   * (migration 048). Null for rows created before multi-connection
+   * support; the webhook backfills them. Used by the Inbox's number
+   * filter and to route replies out of the same number that received
+   * the inbound message.
+   */
+  whatsapp_connection_id?: string | null;
   status: ConversationStatus;
   assigned_agent_id?: string;
   last_message_text?: string;

@@ -13,6 +13,9 @@ import {
   Zap,
   AlertTriangle,
   RotateCcw,
+  Plus,
+  Trash2,
+  Pencil,
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
@@ -50,6 +53,45 @@ type ResetReason = 'token_corrupted' | 'meta_api_error' | null;
 // POST /api/whatsapp/config so the obvious paste mistakes get a named
 // field before a round-trip.
 const META_ID_RE = /^\d+$/;
+
+// Lightweight projection of a connection used by the connection cards.
+// Carries no encrypted credential columns — this is what RLS lets every
+// account member read.
+type ConnectionSummary = {
+  id: string;
+  name: string | null;
+  phone_number_id: string;
+  phone_number: string | null;
+  display_name: string | null;
+  profile_picture_url: string | null;
+  status: string;
+  connected_at: string | null;
+  registered_at: string | null;
+  last_webhook_at: string | null;
+  last_registration_error: string | null;
+};
+
+// The fetched row plus the descriptive columns migration 048 added
+// (kept separate so this compiles even before the type is regenerated).
+type ConnectionRow = WhatsAppConfigRow & {
+  name?: string | null;
+  phone_number?: string | null;
+  display_name?: string | null;
+  profile_picture_url?: string | null;
+  last_error?: string | null;
+};
+
+// Human label for a connection card — name → display name → phone →
+// phone_number_id. Meta exposes no business profile picture, so the
+// avatar falls back to the first initial.
+function connectionLabel(c: ConnectionSummary): string {
+  return (
+    c.name?.trim() ||
+    c.display_name?.trim() ||
+    c.phone_number?.trim() ||
+    c.phone_number_id
+  );
+}
 
 // `meta` object the config route attaches to every failed Meta call
 // (issue #505): what a user quotes to Meta support.
@@ -127,6 +169,15 @@ export function WhatsAppConfig() {
   const [mirrorMedia, setMirrorMedia] = useState(true);
   const [savingMirror, setSavingMirror] = useState(false);
 
+  // Multi-connection support (migration 048). `connections` backs the
+  // card list; `activeConnectionIdRef` remembers which card the form is
+  // editing without re-creating fetchConfig on every selection.
+  const [connections, setConnections] = useState<ConnectionSummary[]>([]);
+  const [activeConnectionId, setActiveConnectionId] = useState<string | null>(null);
+  const activeConnectionIdRef = useRef<string | null>(null);
+  const [connectionName, setConnectionName] = useState('');
+  const [deletingConnectionId, setDeletingConnectionId] = useState<string | null>(null);
+
   // True once /register has succeeded on Meta's side (timestamp set
   // in the row). When false, the saved config is metadata-only and
   // Meta will silently drop every inbound event — that's the
@@ -178,12 +229,10 @@ export function WhatsAppConfig() {
   const fetchConfig = useCallback(async (acctId: string) => {
     setLoading(true);
     try {
-      // Load form values from Supabase (shows what's in DB).
+      // Load EVERY connection for the account (migration 048 allows N).
       // Switched from `user_id` (which would only match the row's
       // original author) to `account_id` so every member of the
-      // account sees the same saved configuration. UNIQUE(account_id)
-      // on the table guarantees the .maybeSingle() return type
-      // remains accurate.
+      // account sees the same saved configuration.
       //
       // Explicit column list — NEVER `select('*')`. The row holds
       // AES-256-GCM-encrypted `access_token`, `verify_token` and
@@ -194,20 +243,49 @@ export function WhatsAppConfig() {
       const { data, error } = await supabase
         .from('whatsapp_config')
         .select(
-          'id, account_id, user_id, phone_number_id, waba_id, app_id, status, connected_at, registered_at, subscribed_apps_at, last_webhook_at, last_registration_error, mirror_inbound_media, created_at, updated_at'
+          'id, account_id, user_id, name, phone_number_id, phone_number, display_name, profile_picture_url, waba_id, app_id, status, connected_at, registered_at, subscribed_apps_at, last_webhook_at, last_registration_error, last_error, mirror_inbound_media, created_at, updated_at'
         )
         .eq('account_id', acctId)
-        .maybeSingle();
+        .order('created_at', { ascending: true });
 
       if (error) {
-        console.error('Failed to load config row:', error);
+        console.error('Failed to load config rows:', error);
       }
 
-      if (data) {
-        setConfig(data);
-        setPhoneNumberId(data.phone_number_id || '');
-        setWabaId(data.waba_id || '');
-        setAppId(data.app_id || '');
+      const rows = ((data ?? []) as unknown) as ConnectionRow[];
+      setConnections(
+        rows.map((r) => ({
+          id: r.id,
+          name: r.name ?? null,
+          phone_number_id: r.phone_number_id,
+          phone_number: r.phone_number ?? null,
+          display_name: r.display_name ?? null,
+          profile_picture_url: r.profile_picture_url ?? null,
+          status: r.status,
+          connected_at: r.connected_at ?? null,
+          registered_at: r.registered_at ?? null,
+          last_webhook_at: r.last_webhook_at ?? null,
+          last_registration_error: r.last_registration_error ?? null,
+        }))
+      );
+
+      // The row the form edits: the currently-selected one, else the
+      // first (oldest) connection.
+      const active =
+        (activeConnectionIdRef.current
+          ? rows.find((r) => r.id === activeConnectionIdRef.current)
+          : undefined) ??
+        rows[0] ??
+        null;
+
+      if (active) {
+        setActiveConnectionId(active.id);
+        activeConnectionIdRef.current = active.id;
+        setConfig(active);
+        setConnectionName(active.name || '');
+        setPhoneNumberId(active.phone_number_id || '');
+        setWabaId(active.waba_id || '');
+        setAppId(active.app_id || '');
         // Corrected from the server health check's `app_secret_set`
         // below; kept blank here so no secret-derived value is read
         // from the row.
@@ -219,9 +297,12 @@ export function WhatsAppConfig() {
         setTokenEdited(false);
         // Undefined on a row read before migration 039 — treat that as
         // on, matching the webhook's own default.
-        setMirrorMedia(data.mirror_inbound_media !== false);
+        setMirrorMedia(active.mirror_inbound_media !== false);
       } else {
+        setActiveConnectionId(null);
+        activeConnectionIdRef.current = null;
         setConfig(null);
+        setConnectionName('');
         setPhoneNumberId('');
         setWabaId('');
         setAppId('');
@@ -237,9 +318,11 @@ export function WhatsAppConfig() {
       setRegistrationProbe(null);
 
       // Then verify health via the API (decrypts token + pings Meta)
-      if (data) {
+      if (active) {
         try {
-          const res = await fetch('/api/whatsapp/config', { method: 'GET' });
+          const res = await fetch(`/api/whatsapp/config?id=${active.id}`, {
+            method: 'GET',
+          });
           const payload = await res.json();
 
           // Server now reports whether a decryptable app_secret is
@@ -307,9 +390,11 @@ export function WhatsAppConfig() {
     setMirrorMedia(next);
     setSavingMirror(true);
     try {
+      // Scope to THIS connection — post-048 an account has many rows.
       const { error } = await supabase
         .from('whatsapp_config')
         .update({ mirror_inbound_media: next })
+        .eq('id', config.id)
         .eq('account_id', accountId);
       if (error) throw new Error(error.message);
       setConfig({ ...config, mirror_inbound_media: next });
@@ -319,6 +404,72 @@ export function WhatsAppConfig() {
       toast.error(t('mirrorInboundSaveFailed'));
     } finally {
       setSavingMirror(false);
+    }
+  }
+
+  function clearFormForNewConnection() {
+    setConfig(null);
+    setConnectionName('');
+    setPhoneNumberId('');
+    setWabaId('');
+    setAppId('');
+    setAppSecret('');
+    setAppSecretEdited(false);
+    setAccessToken('');
+    setVerifyToken('');
+    setPin('');
+    setTokenEdited(false);
+    setConnectionStatus('disconnected');
+    setResetReason(null);
+    setStatusMessage('');
+    setStatusMeta(null);
+    setSaveFailure(null);
+    setWabaSubscription(null);
+    setRegistrationProbe(null);
+  }
+
+  async function handleSelectConnection(id: string) {
+    activeConnectionIdRef.current = id;
+    setActiveConnectionId(id);
+    if (accountId) await fetchConfig(accountId);
+  }
+
+  function handleAddConnection() {
+    if (!canEditSettings) {
+      toast.error(t('adminOnlyConfig'));
+      return;
+    }
+    // Blank the form; the next save inserts a new connection (no `id`).
+    activeConnectionIdRef.current = null;
+    setActiveConnectionId(null);
+    clearFormForNewConnection();
+  }
+
+  async function handleDeleteConnection(id: string) {
+    if (!canEditSettings) {
+      toast.error(t('adminOnlyConfig'));
+      return;
+    }
+    if (!confirm(t('resetConfirm'))) return;
+    try {
+      setDeletingConnectionId(id);
+      const res = await fetch(`/api/whatsapp/config?id=${id}`, {
+        method: 'DELETE',
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error || t('resetFailed'));
+        return;
+      }
+      toast.success(t('resetDone'));
+      activeConnectionIdRef.current = null;
+      setActiveConnectionId(null);
+      if (accountId) await fetchConfig(accountId);
+    } catch (err) {
+      console.error('Delete connection error:', err);
+      toast.error(t('resetFailed'));
+    } finally {
+      setDeletingConnectionId(null);
     }
   }
 
@@ -365,6 +516,10 @@ export function WhatsAppConfig() {
       // and writing direct to Supabase stores the token in plaintext,
       // which then fails decryption on every subsequent health check.
       const payload: Record<string, unknown> = {
+        // Present when editing an existing card; absent when adding a
+        // new connection (the server then inserts a new row).
+        id: config?.id ?? null,
+        name: connectionName.trim() || null,
         phone_number_id: phoneNumberId.trim(),
         waba_id: wabaId.trim() || null,
         app_id: appId.trim() || null,
@@ -454,7 +609,8 @@ export function WhatsAppConfig() {
   async function handleTestConnection() {
     try {
       setTesting(true);
-      const res = await fetch('/api/whatsapp/config', { method: 'GET' });
+      const query = config?.id ? `?id=${config.id}` : '';
+      const res = await fetch(`/api/whatsapp/config${query}`, { method: 'GET' });
       const payload = await res.json();
 
       if (payload.connected) {
@@ -489,9 +645,11 @@ export function WhatsAppConfig() {
     setVerifyingRegistration(true);
     setRegistrationProbe(null);
     try {
-      const res = await fetch('/api/whatsapp/config/verify-registration', {
-        method: 'GET',
-      });
+      const query = config?.id ? `?id=${config.id}` : '';
+      const res = await fetch(
+        `/api/whatsapp/config/verify-registration${query}`,
+        { method: 'GET' },
+      );
       const data = (await res.json()) as RegistrationProbe;
       setRegistrationProbe(data);
       if (data.live) {
@@ -522,7 +680,11 @@ export function WhatsAppConfig() {
 
     try {
       setResetting(true);
-      const res = await fetch('/api/whatsapp/config', { method: 'DELETE' });
+      // Disconnect only the connection the form is editing.
+      const query = config?.id ? `?id=${config.id}` : '';
+      const res = await fetch(`/api/whatsapp/config${query}`, {
+        method: 'DELETE',
+      });
       const data = await res.json();
 
       if (!res.ok) {
@@ -531,6 +693,8 @@ export function WhatsAppConfig() {
       }
 
       toast.success(t('resetDone'));
+      activeConnectionIdRef.current = null;
+      setActiveConnectionId(null);
       setConfig(null);
       setPhoneNumberId('');
       setWabaId('');
@@ -680,6 +844,106 @@ export function WhatsAppConfig() {
             </div>
           </Alert>
         )}
+
+        {/* Connections — every WhatsApp number on this account. */}
+        <Card className="bg-card border-border">
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <CardTitle className="text-base text-foreground">
+                  WhatsApp connections
+                </CardTitle>
+                <CardDescription className="text-xs text-muted-foreground">
+                  Each number is an independent connection with its own inbox
+                  threads.
+                </CardDescription>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleAddConnection}
+                disabled={!canEditSettings}
+              >
+                <Plus className="size-4" />
+                Add connection
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {connections.length === 0 && (
+              <p className="text-sm text-muted-foreground">
+                No connections yet. Add your first WhatsApp number below.
+              </p>
+            )}
+            {connections.map((c) => {
+              const label = connectionLabel(c);
+              const isActive = c.id === activeConnectionId;
+              const statusOk = c.status === 'connected';
+              return (
+                <div
+                  key={c.id}
+                  className={
+                    'flex items-center gap-3 rounded-lg border px-3 py-2 ' +
+                    (isActive
+                      ? 'border-primary/60 bg-primary/5'
+                      : 'border-border')
+                  }
+                >
+                  {c.profile_picture_url ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={c.profile_picture_url}
+                      alt={label}
+                      className="size-9 rounded-full object-cover"
+                    />
+                  ) : (
+                    <span className="flex size-9 items-center justify-center rounded-full bg-muted text-sm font-medium text-muted-foreground">
+                      {label.charAt(0).toUpperCase()}
+                    </span>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium text-foreground">
+                      {label}
+                    </p>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {c.phone_number || c.phone_number_id}
+                      {' · '}
+                      <span
+                        className={
+                          statusOk ? 'text-emerald-400' : 'text-amber-400'
+                        }
+                      >
+                        {statusOk ? 'Connected' : 'Disconnected'}
+                      </span>
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => handleSelectConnection(c.id)}
+                    disabled={isActive}
+                    aria-label="Edit connection"
+                  >
+                    <Pencil className="size-3.5" />
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => handleDeleteConnection(c.id)}
+                    disabled={!canEditSettings || deletingConnectionId === c.id}
+                    aria-label="Delete connection"
+                  >
+                    {deletingConnectionId === c.id ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : (
+                      <Trash2 className="size-3.5 text-red-400" />
+                    )}
+                  </Button>
+                </div>
+              );
+            })}
+          </CardContent>
+        </Card>
 
         {/* Connection Status */}
         <Alert className="bg-card border-border">
@@ -867,6 +1131,20 @@ export function WhatsAppConfig() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <Label className="text-muted-foreground">Connection name</Label>
+              <Input
+                placeholder="e.g. Support, Sales"
+                value={connectionName}
+                onChange={(e) => setConnectionName(e.target.value)}
+                className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
+              />
+              <p className="text-xs text-muted-foreground">
+                A label for this number, shown in the connection list and the Inbox
+                number filter. Defaults to the WhatsApp display name.
+              </p>
+            </div>
+
             <div className="space-y-2">
               <Label className="text-muted-foreground">{t('phoneNumberId')}</Label>
               <Input

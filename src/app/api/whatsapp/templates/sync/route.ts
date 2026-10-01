@@ -6,6 +6,10 @@ import {
   toErrorResponse,
 } from '@/lib/auth/account'
 import { decrypt } from '@/lib/whatsapp/encryption'
+import {
+  resolveConnectionById,
+  resolveDefaultConnection,
+} from '@/lib/whatsapp/connections'
 import { normalizeStatus } from '@/lib/whatsapp/template-status-normalize'
 import type { TemplateButton, TemplateSampleValues } from '@/types'
 
@@ -127,7 +131,7 @@ function extractSampleValues(
   return sv
 }
 
-export async function POST() {
+export async function POST(request: Request) {
   try {
     // Syncing rewrites the account-wide template catalog, which is
     // settings-class data: `canEditSettings` and the message_templates
@@ -135,13 +139,16 @@ export async function POST() {
     // Resolving account_id off the profile only proved membership.
     const { supabase, accountId, userId } = await requireRole('admin')
 
-    const { data: config, error: configError } = await supabase
-      .from('whatsapp_config')
-      .select('*')
-      .eq('account_id', accountId)
-      .single()
+    // Which connection's WABA to sync. Explicit `?connection_id=`, else
+    // the account default.
+    const requestedConnectionId = new URL(request.url).searchParams.get(
+      'connection_id',
+    )
+    const config = requestedConnectionId
+      ? await resolveConnectionById(supabase, accountId, requestedConnectionId)
+      : await resolveDefaultConnection(supabase, accountId)
 
-    if (configError || !config) {
+    if (!config) {
       return NextResponse.json(
         {
           error:
@@ -223,6 +230,7 @@ export async function POST() {
         // post-017, so an INSERT without it errors.
         account_id: accountId,
         user_id: userId,
+        waba_id: config.waba_id,
         name: t.name,
         category: normalizeCategory(t.category),
         language: t.language,

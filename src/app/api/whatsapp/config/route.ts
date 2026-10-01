@@ -95,7 +95,7 @@ function metaFailure(err: unknown, step: MetaConnectStep, ctx: MetaErrorContext)
  *   { connected: false, reason: 'meta_api_error',   message: '...',
  *     meta: { code, subcode, fbtrace_id, step, field, message } }
  */
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const supabase = await createClient()
 
@@ -120,11 +120,16 @@ export async function GET() {
       )
     }
 
-    const { data: config, error: configError } = await supabase
+    // Which connection to health-check. Omitted → the account's default
+    // (first connected, else oldest). The full list is always returned
+    // so the settings page can render every connection card.
+    const connectionId = new URL(request.url).searchParams.get('id')
+
+    const { data: allRows, error: configError } = await supabase
       .from('whatsapp_config')
-      .select('phone_number_id, waba_id, app_id, app_secret, access_token, status')
+      .select('*')
       .eq('account_id', accountId)
-      .maybeSingle()
+      .order('created_at', { ascending: true })
 
     if (configError) {
       console.error('Error fetching whatsapp_config:', configError)
@@ -134,12 +139,51 @@ export async function GET() {
       )
     }
 
-    if (!config) {
+    if (!allRows || allRows.length === 0) {
       return NextResponse.json(
         {
           connected: false,
           reason: 'no_config',
           message: 'No WhatsApp configuration saved yet. Fill in the form and click Save Configuration.',
+          connections: [],
+        },
+        { status: 200 }
+      )
+    }
+
+    // Public projection — strip every secret before it reaches the browser.
+    const connections = allRows.map((row) => ({
+      id: row.id as string,
+      name: (row.name as string | null) ?? null,
+      business_id: (row.business_id as string | null) ?? null,
+      waba_id: (row.waba_id as string | null) ?? null,
+      phone_number_id: row.phone_number_id as string,
+      phone_number: (row.phone_number as string | null) ?? null,
+      display_name: (row.display_name as string | null) ?? null,
+      profile_picture_url: (row.profile_picture_url as string | null) ?? null,
+      app_id: (row.app_id as string | null) ?? null,
+      status: row.status as string,
+      connected_at: (row.connected_at as string | null) ?? null,
+      registered_at: (row.registered_at as string | null) ?? null,
+      subscribed_apps_at: (row.subscribed_apps_at as string | null) ?? null,
+      last_registration_error: (row.last_registration_error as string | null) ?? null,
+      last_webhook_at: (row.last_webhook_at as string | null) ?? null,
+      last_error: (row.last_error as string | null) ?? null,
+      created_at: row.created_at as string,
+      updated_at: row.updated_at as string,
+    }))
+
+    const config = connectionId
+      ? allRows.find((r) => r.id === connectionId)
+      : allRows.find((r) => r.status === 'connected') ?? allRows[0]
+
+    if (!config) {
+      return NextResponse.json(
+        {
+          connected: false,
+          reason: 'not_found',
+          message: 'That WhatsApp connection was not found for this account.',
+          connections,
         },
         { status: 200 }
       )
@@ -240,6 +284,8 @@ export async function GET() {
 
     return NextResponse.json({
       connected: true,
+      id: config.id,
+      connections,
       phone_info: phoneInfo,
       app_id: config.app_id ?? null,
       app_secret_set: appSecretSet,
@@ -287,7 +333,18 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json()
-    const { phone_number_id, waba_id, access_token, verify_token, pin, app_id, app_secret } = body
+    const {
+      id: connectionId,
+      phone_number_id,
+      waba_id,
+      access_token,
+      verify_token,
+      pin,
+      app_id,
+      app_secret,
+      name,
+      business_id,
+    } = body
 
     if (!phone_number_id) {
       return NextResponse.json(
@@ -296,14 +353,33 @@ export async function POST(request: Request) {
       )
     }
 
-    // Fetch existing config early — needed to decide whether a
-    // missing access_token / app_secret means "use stored value"
-    // (update) vs "first-time setup" (reject).
-    const { data: existing } = await supabase
+    // Which connection is being saved:
+    //   * explicit `id` → update that row,
+    //   * else the row whose phone_number_id matches → update it,
+    //   * else → create a NEW connection (multi-connection support).
+    // Fetching all account rows (instead of `.maybeSingle()`, which now
+    // errors on ≥2) also lets us decide whether a missing access_token /
+    // app_secret means "keep stored value" (update) vs "first-time"
+    // (reject).
+    const { data: accountRows } = await supabase
       .from('whatsapp_config')
-      .select('id, registered_at, phone_number_id, access_token, app_secret, app_id')
+      .select('id, registered_at, phone_number_id, access_token, app_secret, app_id, name, business_id')
       .eq('account_id', accountId)
-      .maybeSingle()
+      .order('created_at', { ascending: true })
+
+    const existing =
+      (connectionId
+        ? accountRows?.find((r) => r.id === connectionId)
+        : undefined) ??
+      accountRows?.find((r) => r.phone_number_id === phone_number_id) ??
+      null
+
+    if (connectionId && !existing) {
+      return NextResponse.json(
+        { error: 'That WhatsApp connection was not found for this account.' },
+        { status: 404 },
+      )
+    }
 
     // Meta ids are decimal digit strings. Catch the classic paste
     // mistakes (the +phone number, a display name, a URL) here with a
@@ -591,6 +667,11 @@ export async function POST(request: Request) {
     // Persist everything in one shot. If /register failed we still
     // store the credentials and the error so the UI can guide the
     // user through a retry.
+    const displayPhone =
+      phoneInfo?.display_phone_number ?? (typeof body.phone_number === 'string' ? body.phone_number : null)
+    const verifiedName =
+      phoneInfo?.verified_name ?? (typeof body.display_name === 'string' ? body.display_name : null)
+
     const baseRow: Record<string, unknown> = {
       phone_number_id,
       waba_id: waba_id || null,
@@ -603,6 +684,18 @@ export async function POST(request: Request) {
       subscribed_apps_at: subscribedAppsAt ?? null,
       last_registration_error: registrationError,
       updated_at: new Date().toISOString(),
+      // Descriptive metadata for the connection cards. A blank `name`
+      // falls back through display name → phone → phone_number_id so
+      // every card is labelled.
+      name:
+        (typeof name === 'string' && name.trim()) ||
+        existing?.name ||
+        verifiedName ||
+        displayPhone ||
+        phone_number_id,
+      phone_number: displayPhone,
+      display_name: verifiedName,
+      business_id: (typeof business_id === 'string' && business_id.trim()) || existing?.business_id || null,
     }
     // Only write app_secret when we have a fresh encrypted value.
     // Omitting it on UPDATE preserves the existing stored secret.
@@ -616,6 +709,7 @@ export async function POST(request: Request) {
       const { error: updateError } = await supabase
         .from('whatsapp_config')
         .update(baseRow)
+        .eq('id', existing.id)
         .eq('account_id', accountId)
 
       if (updateError) {
@@ -626,10 +720,10 @@ export async function POST(request: Request) {
         )
       }
     } else {
-      // Insert with both columns: `account_id` is the tenancy key
-      // (NOT NULL post-017, UNIQUE so duplicates trip the constraint
-      // up-front), `user_id` is the audit column identifying which
-      // member of the account saved the config.
+      // Insert a NEW connection: `account_id` is the tenancy key
+      // (NOT NULL post-017), `user_id` the audit column. Post-048 an
+      // account may own many rows, so this no longer trips a
+      // one-per-account constraint.
       const { error: insertError } = await supabase
         .from('whatsapp_config')
         .insert({
@@ -686,7 +780,7 @@ export async function POST(request: Request) {
  * Used by the "Reset Configuration" button to recover from a corrupted
  * encrypted token (mismatched ENCRYPTION_KEY across environments).
  */
-export async function DELETE() {
+export async function DELETE(request: Request) {
   try {
     const supabase = await createClient()
 
@@ -707,10 +801,14 @@ export async function DELETE() {
       )
     }
 
-    const { error: deleteError } = await supabase
-      .from('whatsapp_config')
-      .delete()
-      .eq('account_id', accountId)
+    // `?id=` disconnects ONE connection; omitting it resets every
+    // connection for the account (the "Reset Configuration" recovery).
+    const connectionId = new URL(request.url).searchParams.get('id')
+
+    let query = supabase.from('whatsapp_config').delete().eq('account_id', accountId)
+    if (connectionId) query = query.eq('id', connectionId)
+
+    const { error: deleteError } = await query
 
     if (deleteError) {
       console.error('Error deleting whatsapp_config:', deleteError)

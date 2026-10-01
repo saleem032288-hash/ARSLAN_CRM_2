@@ -48,7 +48,9 @@ function makeDb(script: Script): SupabaseClient {
     eq: () => builder,
     order: () => builder,
     limit: () => {
-      // Only the conversation lookup terminates on `.limit(1)`.
+      // Only the conversation lookup terminates on `.limit(1)`. The audit
+      // user lookup (`whatsapp_config ... limit(1).maybeSingle()`) keeps
+      // chaining, so hand the builder back for other tables.
       if (table === 'conversations' && mode === 'select') {
         const row = script.existingConversationByCall
           ? (script.existingConversationByCall[convLookupCalls] ?? null)
@@ -56,7 +58,7 @@ function makeDb(script: Script): SupabaseClient {
         convLookupCalls++;
         return Promise.resolve({ data: row ? [row] : [], error: null });
       }
-      return Promise.resolve({ data: [], error: null });
+      return builder;
     },
     like: () => {
       const data = script.contactCandidatesByCall
@@ -95,9 +97,19 @@ function makeDb(script: Script): SupabaseClient {
       }
       return Promise.resolve({ data: null, error: null });
     },
-    // Thenable: `await db.from().update().eq()` lands here.
-    then: (resolve: (v: { data: null; error: null }) => void) =>
-      resolve({ data: null, error: null }),
+    // Thenable: `await db.from().update().eq()` lands here. The account
+    // connection list (`whatsapp_config.select().eq().order()`) is
+    // awaited this way too, so return the configured config as a
+    // one-element list (multi-connection resolver reads an array).
+    then: (resolve: (v: { data: unknown; error: null }) => void) => {
+      if (table === 'whatsapp_config') {
+        return resolve({
+          data: script.config ? [script.config] : [],
+          error: null,
+        });
+      }
+      return resolve({ data: null, error: null });
+    },
   };
 
   return {

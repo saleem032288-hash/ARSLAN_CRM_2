@@ -15,6 +15,7 @@ import {
 import { buildMetaTemplatePayload } from '@/lib/whatsapp/template-components'
 import { ensureMediaHeaderHandle } from '@/lib/whatsapp/template-header-handle'
 import { normalizeStatus } from '@/lib/whatsapp/template-status-normalize'
+import { resolveDefaultConnection } from '@/lib/whatsapp/connections'
 
 /**
  * Shared upsert payload builder — both the Meta-failure path and the
@@ -138,12 +139,8 @@ export async function POST(request: Request) {
       metaTemplateId = `dry-run-${crypto.randomUUID()}`
       metaStatus = 'PENDING'
     } else {
-      const { data: config, error: configError } = await supabase
-        .from('whatsapp_config')
-        .select('*')
-        .eq('account_id', accountId)
-        .single()
-      if (configError || !config) {
+      const config = await resolveDefaultConnection(supabase, accountId)
+      if (!config) {
         return NextResponse.json(
           {
             error:
@@ -170,7 +167,7 @@ export async function POST(request: Request) {
       // an actionable message (missing META_APP_ID, unreachable URL,
       // wrong type/size).
       try {
-        await ensureMediaHeaderHandle(payload, accessToken, config.app_id)
+        await ensureMediaHeaderHandle(payload, accessToken, config.app_id ?? undefined)
       } catch (e) {
         return NextResponse.json(
           { error: e instanceof Error ? e.message : 'Header media upload failed.' },

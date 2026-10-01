@@ -5,6 +5,7 @@ import { createClient } from "@/lib/supabase/client";
 import {
   CONVERSATION_SELECT,
   matchesContactFilters,
+  matchesConnectionFilter,
   normalizeConversations,
 } from "@/lib/inbox/conversations";
 import { cn } from "@/lib/utils";
@@ -46,6 +47,12 @@ const STATUS_COLORS: Record<ConversationStatus, string> = {
 
 type InboxFilter = ConversationStatus | "all" | "unread";
 
+/** Minimal connection shape the number filter needs. */
+interface ConnectionOption {
+  id: string;
+  label: string;
+}
+
 export function ConversationList({
   activeConversationId,
   onSelect,
@@ -72,6 +79,11 @@ export function ConversationList({
   const [tags, setTags] = useState<Tag[]>([]);
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const [selectedCompany, setSelectedCompany] = useState<string | null>(null);
+  // WhatsApp-number filter (multi-connection). `null` = All numbers.
+  const [connections, setConnections] = useState<ConnectionOption[]>([]);
+  const [selectedConnectionId, setSelectedConnectionId] = useState<
+    string | null
+  >(null);
 
   // Keep the latest callback in a ref so the fetch effect below can
   // have a stable, empty-dep identity. Previously the fetch useCallback
@@ -140,6 +152,37 @@ export function ConversationList({
     };
   }, []);
 
+  // WhatsApp numbers available to this account, powering the number
+  // filter (multi-connection support). RLS already scopes the table to
+  // the member's account, so no explicit account_id filter is needed.
+  // A failure here is non-fatal: the picker simply doesn't render and
+  // the list behaves exactly as before (All numbers).
+  useEffect(() => {
+    const supabase = createClient();
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase
+        .from("whatsapp_config")
+        .select("id, name, display_name, phone_number, phone_number_id")
+        .order("created_at");
+      if (cancelled || !data) return;
+      setConnections(
+        data.map((row) => ({
+          id: row.id as string,
+          label:
+            (row.name as string | null) ||
+            (row.display_name as string | null) ||
+            (row.phone_number as string | null) ||
+            (row.phone_number_id as string | null) ||
+            (row.id as string),
+        })),
+      );
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Company options are derived from the loaded conversations — there's no
   // separate companies table, and only companies with a live conversation
   // are worth offering as an inbox filter.
@@ -167,6 +210,13 @@ export function ConversationList({
       result = result.filter((c) => c.status === filter);
     }
 
+    // WhatsApp-number filter (multi-connection).
+    if (selectedConnectionId !== null) {
+      result = result.filter((c) =>
+        matchesConnectionFilter(c, selectedConnectionId),
+      );
+    }
+
     // Contact-based filters (tags via OR logic, exact company match).
     if (selectedTagIds.length > 0 || selectedCompany !== null) {
       result = result.filter((c) =>
@@ -188,7 +238,14 @@ export function ConversationList({
     }
 
     return result;
-  }, [conversations, filter, search, selectedTagIds, selectedCompany]);
+  }, [
+    conversations,
+    filter,
+    search,
+    selectedTagIds,
+    selectedCompany,
+    selectedConnectionId,
+  ]);
 
   const toggleTag = useCallback((id: string) => {
     setSelectedTagIds((prev) =>
@@ -237,6 +294,57 @@ export function ConversationList({
         </div>
 
         <div className="flex flex-wrap items-center gap-1">
+          {connections.length > 1 && (
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                className={cn(
+                  "inline-flex max-w-40 items-center justify-center h-7 gap-1 px-2 text-xs rounded-md hover:bg-muted",
+                  selectedConnectionId
+                    ? "text-primary"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                <span className="truncate">
+                  {selectedConnectionId
+                    ? connections.find((c) => c.id === selectedConnectionId)
+                        ?.label ?? t("allNumbers")
+                    : t("allNumbers")}
+                </span>
+                <ChevronDown className="h-3 w-3 shrink-0" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="start"
+                className="max-h-64 w-56 border-border bg-popover"
+              >
+                <DropdownMenuItem
+                  onClick={() => setSelectedConnectionId(null)}
+                  className={cn(
+                    "text-sm",
+                    selectedConnectionId === null
+                      ? "text-primary"
+                      : "text-popover-foreground"
+                  )}
+                >
+                  {t("allNumbers")}
+                </DropdownMenuItem>
+                {connections.map((conn) => (
+                  <DropdownMenuItem
+                    key={conn.id}
+                    onClick={() => setSelectedConnectionId(conn.id)}
+                    className={cn(
+                      "text-sm",
+                      selectedConnectionId === conn.id
+                        ? "text-primary"
+                        : "text-popover-foreground"
+                    )}
+                  >
+                    <span className="truncate">{conn.label}</span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+
           <DropdownMenu>
             <DropdownMenuTrigger className="inline-flex items-center justify-center h-7 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground rounded-md hover:bg-muted">
                 {activeFilter?.label ?? t("filterAll")}

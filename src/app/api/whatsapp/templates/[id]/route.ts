@@ -11,6 +11,7 @@ import {
 } from '@/lib/whatsapp/template-validators'
 import { buildMetaTemplatePayload } from '@/lib/whatsapp/template-components'
 import { ensureMediaHeaderHandle } from '@/lib/whatsapp/template-header-handle'
+import { resolveDefaultConnection } from '@/lib/whatsapp/connections'
 
 /**
  * Per-template lifecycle endpoint.
@@ -138,12 +139,8 @@ export async function PATCH(
     }
 
     if (!isDryRun()) {
-      const { data: config, error: configError } = await supabase
-        .from('whatsapp_config')
-        .select('*')
-        .eq('account_id', accountId)
-        .single()
-      if (configError || !config) {
+      const config = await resolveDefaultConnection(supabase, accountId)
+      if (!config) {
         return NextResponse.json(
           { error: 'WhatsApp not configured.' },
           { status: 400 },
@@ -155,7 +152,7 @@ export async function PATCH(
       // handle on every edit (Meta replaces components wholesale). Derive
       // from header_media_url.
       try {
-        await ensureMediaHeaderHandle(payload, accessToken, config.app_id)
+        await ensureMediaHeaderHandle(payload, accessToken, config.app_id ?? undefined)
       } catch (e) {
         return NextResponse.json(
           { error: e instanceof Error ? e.message : 'Header media upload failed.' },
@@ -279,12 +276,8 @@ export async function DELETE(
     }
 
     if (existing.meta_template_id && !isDryRun()) {
-      const { data: config, error: configError } = await supabase
-        .from('whatsapp_config')
-        .select('*')
-        .eq('account_id', accountId)
-        .single()
-      if (configError || !config || !config.waba_id) {
+      const config = await resolveDefaultConnection(supabase, accountId)
+      if (!config || !config.waba_id) {
         return NextResponse.json(
           { error: 'WhatsApp not configured — cannot delete on Meta.' },
           { status: 400 },

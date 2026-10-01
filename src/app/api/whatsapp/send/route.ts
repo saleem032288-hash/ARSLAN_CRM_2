@@ -11,6 +11,10 @@ import {
   validateSendMessageParams,
   SendMessageError,
 } from '@/lib/whatsapp/send-message'
+import {
+  resolveConnectionById,
+  resolveDefaultConnection,
+} from '@/lib/whatsapp/connections'
 
 // The dashboard's outbound-send endpoint. It owns auth, per-user rate
 // limiting, and the two ways the UI targets a thread — an existing
@@ -48,6 +52,9 @@ export async function POST(request: Request) {
       // yet (Contact detail → Send template) — we find-or-create one below.
       conversation_id: conversationIdInput,
       contact_id,
+      // Optional when initiating from a contact: which number to send
+      // from. Defaults to the account's default connection.
+      connection_id: connectionIdInput,
       message_type,
       content_text,
       media_url,
@@ -126,11 +133,24 @@ export async function POST(request: Request) {
         )
       }
 
+      // Resolve which connection to originate from: the caller's
+      // explicit choice, else the account default.
+      const connection = connectionIdInput
+        ? await resolveConnectionById(supabase, accountId, connectionIdInput)
+        : await resolveDefaultConnection(supabase, accountId)
+      if (!connection) {
+        return NextResponse.json(
+          { error: 'WhatsApp not configured. Please set up your WhatsApp integration first.' },
+          { status: 400 }
+        )
+      }
+
       const resolved = await findOrCreateConversation(
         supabase,
         accountId,
         userId,
-        contact_id
+        contact_id,
+        connection.id
       )
       if (!resolved) {
         return NextResponse.json(
@@ -203,12 +223,16 @@ async function findOrCreateConversation(
   accountId: string,
   userId: string,
   contactId: string,
+  connectionId: string,
 ): Promise<string | null> {
   const { data: existing } = await supabase
     .from('conversations')
     .select('id')
     .eq('account_id', accountId)
     .eq('contact_id', contactId)
+    .eq('whatsapp_connection_id', connectionId)
+    .order('created_at', { ascending: true })
+    .limit(1)
     .maybeSingle()
 
   if (existing) return existing.id
@@ -219,6 +243,7 @@ async function findOrCreateConversation(
       account_id: accountId,
       user_id: userId,
       contact_id: contactId,
+      whatsapp_connection_id: connectionId,
     })
     .select('id')
     .single()

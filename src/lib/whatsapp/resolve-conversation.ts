@@ -24,6 +24,10 @@ import { findExistingContact, isUniqueViolation } from '@/lib/contacts/dedupe';
 import { sanitizePhoneForMeta, isValidE164 } from '@/lib/whatsapp/phone-utils';
 import { SendMessageError } from '@/lib/whatsapp/send-message';
 import { resolveAuditUserId, ContactError } from '@/lib/api/v1/contacts';
+import {
+  resolveConnectionById,
+  resolveDefaultConnection,
+} from '@/lib/whatsapp/connections';
 
 export interface ResolvedConversation {
   conversationId: string;
@@ -42,7 +46,13 @@ export async function resolveConversationByPhone(
   db: SupabaseClient,
   accountId: string,
   phone: string,
-  name?: string | null
+  name?: string | null,
+  /**
+   * Which WhatsApp connection to originate from. Defaults to the
+   * account's default connection when omitted, preserving the
+   * pre-multi-connection behaviour for API callers that don't pass it.
+   */
+  connectionId?: string | null
 ): Promise<ResolvedConversation> {
   const sanitized = sanitizePhoneForMeta(phone);
   if (!isValidE164(sanitized)) {
@@ -54,16 +64,18 @@ export async function resolveConversationByPhone(
   }
 
   // Fail fast (and create nothing) when the account has no WhatsApp
-  // connected — the same error the send would raise anyway.
-  const { data: config } = await db
-    .from('whatsapp_config')
-    .select('id')
-    .eq('account_id', accountId)
-    .maybeSingle();
-  if (!config) {
+  // connected — the same error the send would raise anyway. Resolve a
+  // specific connection (explicit, else the account default) so the
+  // conversation is attributed to one number.
+  const connection = connectionId
+    ? await resolveConnectionById(db, accountId, connectionId)
+    : await resolveDefaultConnection(db, accountId);
+  if (!connection) {
     throw new SendMessageError(
       'whatsapp_not_configured',
-      'WhatsApp not configured. Please set up your WhatsApp integration first.',
+      connectionId
+        ? 'WhatsApp connection not found for this account.'
+        : 'WhatsApp not configured. Please set up your WhatsApp integration first.',
       400
     );
   }
@@ -146,7 +158,8 @@ export async function resolveConversationByPhone(
     db,
     accountId,
     contactId,
-    ownerUserId
+    ownerUserId,
+    connection.id
   );
 
   return { conversationId, contactId, contactCreated };
@@ -162,13 +175,15 @@ async function findOrCreateConversationRow(
   db: SupabaseClient,
   accountId: string,
   contactId: string,
-  ownerUserId: string
+  ownerUserId: string,
+  connectionId: string
 ): Promise<string> {
   const { data: existing, error: findErr } = await db
     .from('conversations')
     .select('id')
     .eq('account_id', accountId)
     .eq('contact_id', contactId)
+    .eq('whatsapp_connection_id', connectionId)
     .order('created_at', { ascending: true })
     .limit(1);
 
@@ -187,6 +202,7 @@ async function findOrCreateConversationRow(
       account_id: accountId,
       user_id: ownerUserId,
       contact_id: contactId,
+      whatsapp_connection_id: connectionId,
     })
     .select('id')
     .single();
@@ -198,6 +214,7 @@ async function findOrCreateConversationRow(
         .select('id')
         .eq('account_id', accountId)
         .eq('contact_id', contactId)
+        .eq('whatsapp_connection_id', connectionId)
         .order('created_at', { ascending: true })
         .limit(1);
       if (raced && raced.length > 0) {

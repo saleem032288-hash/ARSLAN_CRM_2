@@ -50,6 +50,24 @@ export interface ContactFilters {
 }
 
 /**
+ * Whether a conversation passes the Inbox's WhatsApp-number filter
+ * (multi-connection support). `null` means "All numbers" and matches
+ * everything, so the default (no filter) is always a no-op.
+ *
+ * Historical conversations with an unassigned `whatsapp_connection_id`
+ * (created before migration 048) are treated as matching "All numbers"
+ * but are hidden when a specific number is selected — they predate
+ * per-number routing and can't be attributed to a connection.
+ */
+export function matchesConnectionFilter(
+  conversation: Conversation,
+  connectionId: string | null,
+): boolean {
+  if (connectionId === null) return true;
+  return conversation.whatsapp_connection_id === connectionId;
+}
+
+/**
  * Whether a conversation passes the contact-based Inbox filters (issue #272).
  * Empty `tagIds` and null `company` are no-ops, so the default (no filters)
  * always matches. Tags use OR logic, consistent with Broadcast audiences.

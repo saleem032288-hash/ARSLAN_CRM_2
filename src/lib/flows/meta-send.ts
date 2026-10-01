@@ -14,6 +14,10 @@ import {
   isRecipientNotAllowedError,
 } from '@/lib/whatsapp/phone-utils'
 import { resolveContactSendTarget } from '@/lib/whatsapp/wa-identity'
+import {
+  resolveConnectionForConversation,
+  resolveDefaultConnection,
+} from '@/lib/whatsapp/connections'
 import { supabaseAdmin } from './admin-client'
 
 // ------------------------------------------------------------
@@ -40,16 +44,19 @@ import { supabaseAdmin } from './admin-client'
 export async function loadAccountMetaCredentials(
   db: ReturnType<typeof supabaseAdmin>,
   accountId: string,
-): Promise<{ phoneNumberId: string; accessToken: string }> {
-  const { data: config, error: configErr } = await db
-    .from('whatsapp_config')
-    .select('phone_number_id, access_token')
-    .eq('account_id', accountId)
-    .single()
-  if (configErr || !config) {
+  /** When provided, credentials come from the number that owns this
+   *  conversation (so engine replies use the same number the customer
+   *  contacted). Omit for account-level operations → default number. */
+  conversationId?: string,
+): Promise<{ id: string; phoneNumberId: string; accessToken: string }> {
+  const config = conversationId
+    ? await resolveConnectionForConversation(db, accountId, conversationId)
+    : await resolveDefaultConnection(db, accountId)
+  if (!config) {
     throw new Error('WhatsApp not configured for this account')
   }
   return {
+    id: config.id,
     phoneNumberId: config.phone_number_id,
     accessToken: decrypt(config.access_token),
   }
@@ -110,10 +117,8 @@ export async function engineSendText(
   }
   const sanitized = sendTarget.target
 
-  const { phoneNumberId, accessToken } = await loadAccountMetaCredentials(
-    db,
-    args.accountId,
-  )
+  const { id: connectionId, phoneNumberId, accessToken } =
+    await loadAccountMetaCredentials(db, args.accountId, args.conversationId)
 
   const attempt = async (phone: string): Promise<string> => {
     const r = await sendTextMessage({
@@ -149,6 +154,7 @@ export async function engineSendText(
 
   const { error: msgErr } = await db.from('messages').insert({
     conversation_id: args.conversationId,
+    whatsapp_connection_id: connectionId,
     sender_type: 'bot',
     content_type: 'text',
     content_text: args.text,
@@ -219,10 +225,8 @@ export async function engineSendMedia(
   }
   const sanitized = sendTarget.target
 
-  const { phoneNumberId, accessToken } = await loadAccountMetaCredentials(
-    db,
-    args.accountId,
-  )
+  const { id: connectionId, phoneNumberId, accessToken } =
+    await loadAccountMetaCredentials(db, args.accountId, args.conversationId)
 
   const attempt = async (phone: string): Promise<string> => {
     const r = await sendMediaMessage({
@@ -266,6 +270,7 @@ export async function engineSendMedia(
   const preview = args.caption?.trim() || `[${args.kind}]`
   const { error: msgErr } = await db.from('messages').insert({
     conversation_id: args.conversationId,
+    whatsapp_connection_id: connectionId,
     sender_type: 'bot',
     content_type: args.kind,
     content_text: args.caption ?? null,
@@ -370,10 +375,8 @@ async function sendInteractiveViaMeta(
   }
   const sanitized = sendTarget.target
 
-  const { phoneNumberId, accessToken } = await loadAccountMetaCredentials(
-    db,
-    input.accountId,
-  )
+  const { id: connectionId, phoneNumberId, accessToken } =
+    await loadAccountMetaCredentials(db, input.accountId, input.conversationId)
 
   const attempt = async (phone: string): Promise<string> => {
     if (input.kind === 'buttons') {
@@ -457,6 +460,7 @@ async function sendInteractiveViaMeta(
 
   const { error: msgErr } = await db.from('messages').insert({
     conversation_id: input.conversationId,
+    whatsapp_connection_id: connectionId,
     sender_type: 'bot',
     content_type: 'interactive',
     content_text: input.bodyText,

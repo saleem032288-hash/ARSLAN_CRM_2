@@ -98,22 +98,21 @@ vi.mock('@supabase/supabase-js', () => ({
             },
           }
         case 'conversations':
-          // findOrCreateConversation: select().eq().eq().order().limit()
-          return {
-            select: () => ({
-              eq: () => ({
-                eq: () => ({
-                  order: () => ({
-                    limit: () =>
-                      Promise.resolve({
-                        data: [h.state.conversation],
-                        error: null,
-                      }),
-                  }),
+          // findOrCreateConversation: select().eq()×3.order().limit()
+          // (the third eq scopes by whatsapp_connection_id post-048)
+          // and the unique-race re-resolve.
+          return (() => {
+            const chain: Record<string, unknown> = {
+              eq: () => chain,
+              order: () => chain,
+              limit: () =>
+                Promise.resolve({
+                  data: [h.state.conversation],
+                  error: null,
                 }),
-              }),
-            }),
-          }
+            }
+            return { select: () => chain }
+          })()
         case 'broadcast_recipients':
           // Two chains land here:
           //   flagBroadcastReplyIfAny: select().eq().eq().in().order().limit()
